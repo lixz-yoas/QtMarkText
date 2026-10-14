@@ -133556,40 +133556,28 @@ const pasteCtrl = (ContentState2) => {
           src: ""
         });
       }
-      const reader = new FileReader();
-      reader.onload = (event2) => {
-        const base642 = event2.target.result;
-        const imageWrapper2 = this.muya.container.querySelector(`span[data-id=${id2}]`);
-        const imageContainer = this.muya.container.querySelector(
-          `span[data-id=${id2}] .ag-image-container`
-        );
-        this.stateRender.urlMap.set(id2, base642);
-        if (imageContainer) {
-          imageWrapper2.classList.remove("ag-empty-image");
-          imageWrapper2.classList.add("ag-image-success");
-          const image2 = document.createElement("img");
-          image2.src = base642;
-          imageContainer.appendChild(image2);
-        }
-      };
-      reader.readAsDataURL(file);
-      let newSrc = null;
-      try {
-        newSrc = await this.muya.options.imageAction(file, id2);
-      } catch (error2) {
-        console.error("Unexpected error on image action:", error2);
-        return null;
-      }
-      const base64 = this.stateRender.urlMap.get(id2);
-      if (base64) {
-        this.stateRender.urlMap.set(newSrc, base64);
-        this.stateRender.urlMap.delete(id2);
-      }
+      const dataUrl = await new Promise((resolve2, reject2) => {
+        const reader = new FileReader();
+        reader.onload = (event2) => resolve2(event2.target.result);
+        reader.onerror = () => reject2(reader.error);
+        reader.readAsDataURL(file);
+      });
       const imageWrapper = this.muya.container.querySelector(`span[data-id=${id2}]`);
+      const imageContainer = this.muya.container.querySelector(
+        `span[data-id=${id2}] .ag-image-container`
+      );
+      if (imageContainer) {
+        imageContainer.replaceChildren();
+        imageWrapper.classList.remove("ag-empty-image");
+        imageWrapper.classList.add("ag-image-success");
+        const image2 = document.createElement("img");
+        image2.src = dataUrl;
+        imageContainer.appendChild(image2);
+      }
       if (imageWrapper) {
         const imageInfo = getImageInfo(imageWrapper);
         this.replaceImage(imageInfo, {
-          src: newSrc
+          src: dataUrl
         });
       }
       return file;
