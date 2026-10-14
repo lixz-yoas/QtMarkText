@@ -86120,9 +86120,10 @@ const debouncedSendBufferedState = debounce$3(() => {
     console.error("Failed to update buffered state", err);
   });
 }, BUFFERED_STATE_DEBOUNCE_MS);
+const DEFAULT_SIDE_BAR_WIDTH = 560;
 const normalizeSideBarWidth = (width) => {
   const numericWidth = Number(width);
-  return Number.isFinite(numericWidth) ? Math.max(numericWidth, 220) : 280;
+  return Number.isFinite(numericWidth) ? Math.max(numericWidth, 220) : DEFAULT_SIDE_BAR_WIDTH;
 };
 const createBufferedLayoutState = (state) => {
   if (!state || typeof state !== "object") return null;
@@ -86135,7 +86136,12 @@ const createBufferedLayoutState = (state) => {
   };
 };
 const initialWidth = localStorage.getItem("side-bar-width");
-const initialSideBarWidth = normalizeSideBarWidth(initialWidth);
+const initialSideBarWidth = normalizeSideBarWidth(
+  Number(initialWidth) < DEFAULT_SIDE_BAR_WIDTH ? DEFAULT_SIDE_BAR_WIDTH : initialWidth
+);
+if (Number(initialWidth) < DEFAULT_SIDE_BAR_WIDTH) {
+  localStorage.setItem("side-bar-width", String(DEFAULT_SIDE_BAR_WIDTH));
+}
 const useLayoutStore = /* @__PURE__ */ defineStore("layout", () => {
   const rightColumn = /* @__PURE__ */ ref$1("files");
   const showSideBar = /* @__PURE__ */ ref$1(false);
@@ -166950,6 +166956,7 @@ const SideBarSearch = /* @__PURE__ */ _export_sfc(_sfc_main$v, [["__scopeId", "d
 const _hoisted_1$u = { class: "title" };
 const _sfc_main$u = /* @__PURE__ */ defineComponent({
   __name: "toc",
+  emits: ["toggle-toc-maximized"],
   setup(__props) {
     const { t: t2 } = useI18n();
     const editorStore = useEditorStore();
@@ -166969,7 +166976,11 @@ const _sfc_main$u = /* @__PURE__ */ defineComponent({
       return openBlock(), createElementBlock("div", {
         class: normalizeClass(["side-bar-toc", [{ "side-bar-toc-overflow": !unref(wordWrapInToc2), "side-bar-toc-wordwrap": unref(wordWrapInToc2) }]])
       }, [
-        createBaseVNode("div", _hoisted_1$u, toDisplayString$1(unref(t2)("sideBar.toc.title")), 1),
+        createBaseVNode("div", {
+          class: "title",
+          title: "\u53cc\u51fb\uff1a\u76ee\u5f55\u5360\u6ee1 / \u8fd8\u539f",
+          onDblclick: ($event) => _ctx.$emit("toggle-toc-maximized")
+        }, toDisplayString$1(unref(t2)("sideBar.toc.title")), 41, ["onDblclick"]),
         unref(toc).length ? (openBlock(), createBlock(_component_el_tree, {
           key: 0,
           data: unref(toc),
@@ -166998,7 +167009,7 @@ const _sfc_main$t = /* @__PURE__ */ defineComponent({
     const sideBar2 = /* @__PURE__ */ ref$1(null);
     const dragBar = /* @__PURE__ */ ref$1(null);
     const openedFiles = /* @__PURE__ */ ref$1([]);
-    const sideBarViewWidth = /* @__PURE__ */ ref$1(280);
+    const sideBarViewWidth = /* @__PURE__ */ ref$1(DEFAULT_SIDE_BAR_WIDTH);
     const { rightColumn, showSideBar, sideBarWidth } = storeToRefs(layoutStore);
     const { projectTree } = storeToRefs(projectStore);
     const { tabs } = storeToRefs(editorStore);
@@ -167100,7 +167111,10 @@ const _sfc_main$t = /* @__PURE__ */ defineComponent({
             class: "panel-split",
             title: "双击：目录占满 / 还原",
             onDblclick: toggleTocMaximized
-          }, null, 8, ["onDblclick"]), createVNode(_sfc_main$u, { key: 2 })
+          }, null, 8, ["onDblclick"]), createVNode(_sfc_main$u, {
+            key: 2,
+            onToggleTocMaximized: toggleTocMaximized
+          })
           ], 64)) : unref(rightColumn) === "search" ? (openBlock(), createBlock(SideBarSearch, { key: 1 })) : createCommentVNode("", true)
         ], 2), [
           [vShow, unref(rightColumn)]
