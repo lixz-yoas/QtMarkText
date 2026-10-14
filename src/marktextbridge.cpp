@@ -30,9 +30,11 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegExp>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTextCodec>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QVariant>
@@ -532,6 +534,179 @@ QJsonValue MarkTextBridge::fallbackInvoke(const QString &sChannel, const QJsonAr
 }
 
 //=====================================================================
+//  会话恢复：update-buffer-state（收）/ mt::load-state（发）
+//=====================================================================
+//  快照形如（BUFFERED_STATE_VERSION = 1）：
+//    {
+//      "version": 1,
+//      "currentFileId": "<id>",              // editor 段
+//      "tabs": [ { id, pathname, filename, markdown, isSaved,
+//                  encoding, lineEnding, trimTrailingNewline,
+//                  adjustLineEndingOnSave, cursor, wordCount,
+//                  muyaIndexCursor, scrollTop, history, ... } ],
+//      "project": { "rootDirectory": "<绝对路径|空串>" },
+//      "layout":  { "rightColumn", "showSideBar", "showTabBar",
+//                   "sideBarWidth" }
+//    }
+//
+//  注意 layout 段里也含 sideBarWidth —— 若原样回灌会覆盖 r155 刚统一
+//  的"默认 2 倍宽"口径。故下发前把 layout.sideBarWidth 去掉，
+//  宽度仍由 localStorage / DEFAULT_SIDE_BAR_WIDTH 那套说了算
+//  （渲染层 createBufferedLayoutState 对 undefined 是跳过不赋值的）。
+
+QString MarkTextBridge::sessionIniValueKey()
+{
+    return QStringLiteral("session/bufferedState");
+}
+
+bool MarkTextBridge::hasRestorableSession() const
+{
+    const QJsonObject objState = loadSessionFromIni();
+    return !objState.isEmpty() && !objState.value(QStringLiteral("tabs")).toArray().isEmpty();
+}
+
+void MarkTextBridge::storeBufferedState(const QJsonObject &objState)
+{
+    if (objState.isEmpty()) {
+        return;
+    }
+
+    // ---- 1) 只保留"已落盘"的标签页 ----
+    //   判定：pathname 非空且 isSaved 为真。用户口径是"关闭时没有
+    //   打开的文件就什么都不恢复"，untitled 页（pathname 为空）
+    //   即使 isSaved 也留不住内容，不参与恢复。
+    const QJsonArray arrTabsIn = objState.value(QStringLiteral("tabs")).toArray();
+    QJsonArray arrTabsKeep;
+    QString    sCurrentFileId = objState.value(QStringLiteral("currentFileId")).toString();
+    bool       bCurrentStillOpen = false;
+
+    for (const QJsonValue &vTab : arrTabsIn) {
+        if (!vTab.isObject()) {
+            continue;
+        }
+        const QJsonObject objTab = vTab.toObject();
+        const QString sPathname = objTab.value(QStringLiteral("pathname")).toString();
+        if (sPathname.isEmpty()) {
+            continue;
+        }
+        // isSaved 缺失时按"已保存"处理（老快照/边界情况），
+        // 因为 pathname 非空本身就意味着它对应磁盘上的一个文件。
+        if (objTab.contains(QStringLiteral("isSaved"))
+                && !objTab.value(QStringLiteral("isSaved")).toBool()) {
+            continue;
+        }
+        if (objTab.value(QStringLiteral("id")).toString() == sCurrentFileId) {
+            bCurrentStillOpen = true;
+        }
+        arrTabsKeep.append(objTab);
+    }
+
+    PreferencesStore *pStore = m_pStore;
+    Q_UNUSED(pStore);
+
+    QSettings settings(PreferencesStore::iniFilePath(), QSettings::IniFormat);
+    settings.setIniCodec("UTF-8");
+
+    // ---- 2) 过滤后一个不剩：清掉记录，下次走空白首页 ----
+    if (arrTabsKeep.isEmpty()) {
+        settings.remove(sessionIniValueKey());
+        settings.sync();
+        emit logMessage(QStringLiteral("info"),
+                        QStringLiteral("[会话] 退出时无已保存的打开文件，清除会话记录"));
+        return;
+    }
+
+    // 当前页若被过滤掉了，退化为第一页，免得恢复后 currentFile 悬空
+    if (!bCurrentStillOpen) {
+        sCurrentFileId = arrTabsKeep.at(0).toObject().value(QStringLiteral("id")).toString();
+    }
+
+    QJsonObject objKeep = objState;
+    objKeep.insert(QStringLiteral("currentFileId"), sCurrentFileId);
+    objKeep.insert(QStringLiteral("tabs"), arrTabsKeep);
+
+    // ---- 3) 抹掉 layout.sideBarWidth，保住 r155 的默认宽度口径 ----
+    if (objKeep.contains(QStringLiteral("layout"))) {
+        QJsonObject objLayout = objKeep.value(QStringLiteral("layout")).toObject();
+        objLayout.remove(QStringLiteral("sideBarWidth"));
+        objKeep.insert(QStringLiteral("layout"), objLayout);
+    }
+
+    const QString sJson = QString::fromUtf8(
+                QJsonDocument(objKeep).toJson(QJsonDocument::Compact));
+    settings.setValue(sessionIniValueKey(), sJson);
+    settings.sync();
+
+    qInfo("[会话] 已记录 %d 个打开文件（当前页 id=%s）",
+          arrTabsKeep.size(), qPrintable(sCurrentFileId));
+}
+
+QJsonObject MarkTextBridge::loadSessionFromIni() const
+{
+    QSettings settings(PreferencesStore::iniFilePath(), QSettings::IniFormat);
+    settings.setIniCodec("UTF-8");
+    const QString sJson = settings.value(sessionIniValueKey()).toString();
+    if (sJson.isEmpty()) {
+        return QJsonObject();
+    }
+    const QJsonDocument doc = QJsonDocument::fromJson(sJson.toUtf8());
+    if (!doc.isObject()) {
+        return QJsonObject();
+    }
+    QJsonObject obj = doc.object();
+    if (obj.value(QStringLiteral("tabs")).toArray().isEmpty()) {
+        return QJsonObject();
+    }
+    return obj;
+}
+
+bool MarkTextBridge::restoreBufferedState()
+{
+    const QJsonObject objState = loadSessionFromIni();
+    if (objState.isEmpty()) {
+        return false;
+    }
+
+    // 二次校验：路径在两次启动之间可能已被删除/改名（U 盘拔了、文件被移走）。
+    // 剔除后仍为空则整体放弃，交回外壳走"空白首页 + 上次目录"。
+    const QJsonArray arrTabsIn = objState.value(QStringLiteral("tabs")).toArray();
+    QJsonArray arrTabsKeep;
+    for (const QJsonValue &vTab : arrTabsIn) {
+        const QJsonObject objTab = vTab.toObject();
+        const QString sPathname = objTab.value(QStringLiteral("pathname")).toString();
+        if (sPathname.isEmpty() || !QFileInfo::exists(sPathname)) {
+            qInfo("[会话] 跳过已不存在的文件：%s", qPrintable(sPathname));
+            continue;
+        }
+        arrTabsKeep.append(objTab);
+    }
+    if (arrTabsKeep.isEmpty()) {
+        qInfo("[会话] 快照里的文件全部不存在，放弃恢复");
+        return false;
+    }
+
+    QJsonObject objSend = objState;
+    objSend.insert(QStringLiteral("tabs"), arrTabsKeep);
+    // currentFileId 若指向被剔除的页，退化为第一页
+    const QString sCur = objSend.value(QStringLiteral("currentFileId")).toString();
+    bool bCurAlive = false;
+    for (const QJsonValue &vTab : arrTabsKeep) {
+        if (vTab.toObject().value(QStringLiteral("id")).toString() == sCur) {
+            bCurAlive = true;
+            break;
+        }
+    }
+    if (!bCurAlive) {
+        objSend.insert(QStringLiteral("currentFileId"),
+                       arrTabsKeep.at(0).toObject().value(QStringLiteral("id")).toString());
+    }
+
+    emitToRenderer(QStringLiteral("mt::load-state"), QJsonArray{ objSend });
+    qInfo("[会话] 已下发会话快照：%d 个文件", arrTabsKeep.size());
+    return true;
+}
+
+//=====================================================================
 //  invoke 通道登记
 //=====================================================================
 void MarkTextBridge::registerInvokeHandlers()
@@ -795,6 +970,17 @@ void MarkTextBridge::registerInvokeHandlers()
     // ---- 外部命令是否存在（pandoc 等）：本工程不随包分发 ----
     m_hashInvoke.insert(QStringLiteral("mt::cmd::exists"),
                         [](const QJsonArray &) -> QJsonValue { return false; });
+
+    // ---- 会话快照（渲染层每次改动 debounce 1s 上报；对照 main/ipc/state.ts）----
+    //  通道名没有 mt:: 前缀（渲染层就是这么写的），照抄。
+    m_hashInvoke.insert(QStringLiteral("update-buffer-state"),
+                        [this](const QJsonArray &arrArgs) -> QJsonValue {
+                            if (!arrArgs.isEmpty() && arrArgs.at(0).isObject()) {
+                                storeBufferedState(arrArgs.at(0).toObject());
+                                return true;
+                            }
+                            return false;
+                        });
 }
 
 //=====================================================================
@@ -969,15 +1155,29 @@ void MarkTextBridge::registerSendHandlers()
                               m_bRendererReady = true;
                               emit logMessage(QStringLiteral("info"),
                                               QStringLiteral("渲染层已初始化（mt::window-initialized）"));
+                              // ---- 会话恢复：必须延后一拍下发 ----
+                              //  为什么不能在这里直接发 mt::load-state：
+                              //    mt::window-initialized 是渲染层在 bootstrap-editor
+                              //    回调里**第一行**发的（在解构 config 之后立刻 send），
+                              //    此时同文件里的 LISTEN_FOR_STATE_REPLACE（它才是
+                              //    mt::load-state 的监听者）还没执行到。
+                              //    实测：同一毫秒下发，快照被丢弃，界面停在空白页。
+                              //  故推到事件循环下一拍，让 preload 剩下的 init 链先跑完。
+                              //  （emit 是 postMessage 异步投递，这一拍足够。）
+                              QTimer::singleShot(0, this, [this]() {
+                                  if (restoreBufferedState()) {
+                                      emit sessionRestored();
+                                  }
+                                  // 命令行文件是用户的显式意图，排在会话恢复之后打开
+                                  const QStringList listFiles = m_listPendingFiles;
+                                  m_listPendingFiles.clear();
+                                  for (const QString &sFile : listFiles) {
+                                      emit logMessage(QStringLiteral("info"),
+                                                      QStringLiteral("补发待打开文件：%1").arg(sFile));
+                                      openFileInRenderer(sFile);
+                                  }
+                              });
                               emit rendererReady();
-                              // 补发就绪前排队待打开的文件
-                              const QStringList listFiles = m_listPendingFiles;
-                              m_listPendingFiles.clear();
-                              for (const QString &sFile : listFiles) {
-                                  emit logMessage(QStringLiteral("info"),
-                                                  QStringLiteral("补发待打开文件：%1").arg(sFile));
-                                  openFileInRenderer(sFile);
-                              }
                           }
                       });
 
@@ -1111,11 +1311,31 @@ void MarkTextBridge::registerSendHandlers()
                           handleFileSaveRequest(arrArgs, true);
                       });
 
+    // ---- 退出握手 ----
+    //  外壳 closeEvent 发 mt::ask-for-close，渲染层会先同步刷一次会话快照
+    //  （sendBufferedState）再回 mt::close-window；本层把它转成信号，
+    //  外壳据此放行关闭。注意必须注册在下面 arrCmdChannels 兜底循环之前，
+    //  否则会被"统一忽略"占位覆盖（循环里有 contains 保护，但先注册更直观）。
+    m_hashSend.insert(QStringLiteral("mt::close-window"),
+                      [this](const QJsonArray &) {
+                          emit logMessage(QStringLiteral("info"),
+                                          QStringLiteral("[退出] 渲染层已回 mt::close-window（快照已刷出）"));
+                          emit closeWindowRequested();
+                      });
+    // 有未保存内容时渲染层会回这条（本工程未实现保存确认对话框，
+    // 直接按"放行关闭"处理：未保存内容由渲染层自己的恢复机制兜底）
+    m_hashSend.insert(QStringLiteral("mt::close-window-confirm"),
+                      [this](const QJsonArray &) {
+                          emit logMessage(QStringLiteral("info"),
+                                          QStringLiteral("[退出] 渲染层回 mt::close-window-confirm，直接放行"));
+                          emit closeWindowRequested();
+                      });
+
     // ---- 命令类（qt 菜单已直接路由，这里兜底）----
     const char *const arrCmdChannels[] = {
         "mt::cmd-open-file", "mt::cmd-open-folder", "mt::cmd-new-editor-window",
         "mt::cmd-import-file", "mt::cmd-close-window", "mt::cmd-toggle-autosave",
-        "mt::close-window", "mt::close-window-confirm", "mt::app-try-quit",
+        "mt::app-try-quit",
         "mt::open-file-by-window-id", "mt::make-screenshot", "mt::check-for-update",
         "mt::NEED_UPDATE", "mt::handle-renderer-error", "mt::format-link-click",
         "mt::save-tabs", "mt::window-tab-closed", "mt::view-layout-changed",

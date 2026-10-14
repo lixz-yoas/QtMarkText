@@ -182,6 +182,17 @@ private:
     void openFolderInShell(const QString &sDir);
     /// 渲染层就绪后，若上次的文件夹仍在则自动重新打开（只做一次）
     void restoreLastOpenedFolder();
+
+    // ---- 会话恢复（对照 Electron main/ipc/state.ts）----
+    /// 渲染层上报会话快照的落点由 MarkTextBridge 负责（update-buffer-state），
+    /// 外壳这里只做两件事：
+    ///   1) 退出前跟渲染层握手，确保"最后 1s 内的改动"也进了快照：
+    ///      closeEvent → emit mt::ask-for-close → 渲染层先 sendBufferedState()
+    ///      再回 mt::close-window → 本层收到后才真正放行关闭。
+    ///   2) 启动时若已恢复出会话，就不再补发 mt::open-directory 抢项目树。
+    void onRendererCloseHandshake();
+    /// 会话是否已在本轮启动中成功恢复（会话恢复与"上次目录"二选一）
+    void setSessionRestored(bool bRestored) { m_bSessionRestored = bRestored; }
     /// "上次打开的文件夹"存 ini 的 [ui] 节 —— 属外壳自有界面状态，
     /// 不进偏好表（偏好表是全量下发给渲染层、也会被它回传覆盖的）。
     QString lastOpenedFolder() const;
@@ -209,6 +220,10 @@ private:
     QStringList        m_listRecentFiles;
     QString            m_sLastDir;
     bool               m_bLastFolderRestored; // 上次文件夹只自动恢复一次
+    bool               m_bSessionRestored;    // 本轮启动已从会话快照恢复出标签页
+    bool               m_bCloseHandshakeSent; // 已向渲染层发过 mt::ask-for-close
+    bool               m_bCloseHandshakeDone; // 渲染层已回 mt::close-window，可放行
+    bool               m_bAllowClose;         // 握手完成，closeEvent 直接放行
     bool               m_bGeometryRestored;   // 上次窗口大小只还原一次（showEvent 里做）
     QRect              m_rcNormalGeometry;    // 自记的"正常大小"（非最大化时）
     bool               m_bNormalGeometryValid;// m_rcNormalGeometry 是否已可用

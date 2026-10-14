@@ -367,6 +367,10 @@ MainWindow::MainWindow(QWidget *pParent)
     , m_pButtonsDiagTimer(nullptr)
     , m_sLastDir(QDir::homePath())
     , m_bLastFolderRestored(false)
+    , m_bSessionRestored(false)
+    , m_bCloseHandshakeSent(false)
+    , m_bCloseHandshakeDone(false)
+    , m_bAllowClose(false)
     , m_bGeometryRestored(false)
     , m_bNormalGeometryValid(false)
     , m_nLastCommandMs(0)
@@ -436,6 +440,35 @@ MainWindow::~MainWindow()
 
 void MainWindow::closeEvent(QCloseEvent *pEvent)
 {
+    // ---- 第一步：跟渲染层握手，确保会话快照是最新的 ----
+    //  渲染层的快照上报（update-buffer-state）是 debounce 1s 的，用户"改完
+    //  立刻关窗"时最后 1s 的变化还没送出来。原版 MarkText 的解法是退出前
+    //  发 mt::ask-for-close：渲染层收到后先同步 sendBufferedState()，
+    //  再回 mt::close-window；主进程收到回执才真正退出。
+    //  这里照搬：第一次进入本函数只发握手（并丢掉本次关闭事件），
+    //  等 onRendererCloseHandshake() 置 m_bAllowClose 后再 close() 一次。
+    if (!m_bAllowClose) {
+        IEditorEngine *pEngine = currentEngine();
+        MarkTextBridge *pBridge = (pEngine != nullptr) ? pEngine->bridge() : nullptr;
+        if (pBridge != nullptr && pBridge->isRendererReady() && !m_bCloseHandshakeSent) {
+            m_bCloseHandshakeSent = true;
+            qInfo("[退出] 发送 mt::ask-for-close，等待渲染层刷出会话快照");
+            pBridge->emitToRenderer(QStringLiteral("mt::ask-for-close"));
+            pEvent->ignore();   // 先别关，等渲染层回 mt::close-window
+            // 兜底：万一渲染层没回（脚本出错/页面已挂），800ms 后强行放行，
+            // 不能因为握手把窗口卡死退不掉。
+            QTimer::singleShot(800, this, [this]() {
+                if (!m_bAllowClose) {
+                    qWarning("[退出] 渲染层未回 mt::close-window，超时放行");
+                    m_bAllowClose = true;
+                    close();
+                }
+            });
+            return;
+        }
+        m_bAllowClose = true;   // 没有渲染层（占位引擎/未就绪）：直接放行
+    }
+
     // 退出诊断：Qt 只在「没有可见的、无父的顶层窗口」时才自动退出事件循环。
     // 把当前顶层窗口全部列出来，谁挡着退出就一目了然（详见 readme 退出分析）。
     const QList<QWidget *> listTops = QApplication::topLevelWidgets();
@@ -971,6 +1004,19 @@ void MainWindow::restoreLastOpenedFolder()
     }
     m_bLastFolderRestored = true;
 
+    // ---- 会话恢复优先 ----
+    //  ini 里存在含已保存文件的会话快照时，本次启动的标签页/项目树
+    //  都由 mt::load-state 恢复（bridge 在 window-initialized 下一拍下发），
+    //  这里若再发 mt::open-directory 会把项目树重开一遍（丢失展开态）。
+    //  注意不能用 sessionRestored 信号判断 —— 它在下一拍才到，赛不过这里。
+    IEditorEngine *pEngineEarly = currentEngine();
+    MarkTextBridge *pBridgeEarly = (pEngineEarly != nullptr) ? pEngineEarly->bridge() : nullptr;
+    if (pBridgeEarly != nullptr && pBridgeEarly->hasRestorableSession()) {
+        qInfo("[会话] 存在可恢复会话，跳过「上次文件夹」自动打开");
+        m_bSessionRestored = true;
+        return;
+    }
+
     const QString sDir = lastOpenedFolder();
     if (sDir.isEmpty()) {
         return;
@@ -994,6 +1040,22 @@ void MainWindow::restoreLastOpenedFolder()
     pBridge->emitToRenderer(QStringLiteral("mt::open-directory"),
                             QJsonArray{ QDir::toNativeSeparators(sDir) });
     m_sLastDir = sDir;
+}
+
+void MainWindow::onRendererCloseHandshake()
+{
+    // 渲染层回执：它已经把最新快照刷进 ini，可以真正关窗了。
+    // 这里在 WebView2 的 IPC 回调里，直接 close() 会重入 closeEvent；
+    // 推到事件循环下一拍再关，让本次回调先正常返回。
+    if (m_bCloseHandshakeDone) {
+        return;
+    }
+    m_bCloseHandshakeDone = true;
+    qInfo("[退出] 收到渲染层退出握手回执，安排关闭窗口");
+    QTimer::singleShot(0, this, [this]() {
+        m_bAllowClose = true;
+        close();
+    });
 }
 
 QString MainWindow::dialogStartDir() const
@@ -1186,6 +1248,21 @@ IEditorEngine *MainWindow::addEditorTab()
         // 同上，就绪后再恢复"上次打开的文件夹"（渲染层的项目树监听此时才注册好）
         connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
                 this, &MainWindow::restoreLastOpenedFolder);
+        // ---- 会话恢复 ----
+        //  bridge 在 mt::window-initialized 后若成功下发了 mt::load-state，
+        //  会回 sessionRestored()。此时"上次目录"就不该再抢项目树了：
+        //  快照里的 project.rootDirectory 已经把项目树恢复好了，
+        //  再发一次 mt::open-directory 会把树重开一遍（闪一下、丢失展开态）。
+        connect(pEngine->bridge(), &MarkTextBridge::sessionRestored, this,
+                [this]() {
+                    qInfo("[会话] 已从快照恢复，跳过「上次文件夹」自动打开");
+                    setSessionRestored(true);
+                    m_bLastFolderRestored = true;   // 抢占"只恢复一次"的名额
+                });
+        // ---- 退出握手回执 ----
+        //  渲染层刷完会话快照后回 mt::close-window，这里放行关闭。
+        connect(pEngine->bridge(), &MarkTextBridge::closeWindowRequested,
+                this, &MainWindow::onRendererCloseHandshake);
         // 侧边栏/标签栏是渲染层自绘的，"切换"由它自己执行；它改完会回一条
         // mt::view-layout-changed，外壳据此同步「视图」菜单的勾选状态。
         connect(pEngine->bridge(), &MarkTextBridge::layoutChanged, this,
@@ -1235,7 +1312,18 @@ IEditorEngine *MainWindow::addEditorTab()
             m_pTabWidget->setTabText(n, pEngine->displayName());
         }
         if (pEngine == currentEngine()) {
-            refreshTitle();
+            // 会话恢复时渲染层自己开的 tab 不经过外壳 openFile()，
+            // 引擎的 filePath 仍是空 —— displayName() 会退回"未命名.md"，
+            // 把已经恢复好的标题又盖回去（实测现象：渲染层 document.title
+            // 已是 sessB.md，外壳标题却停在未命名.md）。这里优先采用
+            // 渲染层的 document.title（形如 "xxx.md - MarkText"），
+            // 引擎没有文件路径时以外壳自己的格式兜底。
+            const QString sDoc = pEngine->property("docTitle").toString();
+            if (!sDoc.isEmpty() && sDoc.contains(QStringLiteral(" - MarkText"))) {
+                setWindowTitle(sDoc);
+            } else {
+                refreshTitle();
+            }
         }
     });
     connect(pEngine, &IEditorEngine::modifiedChanged, this, [this, pEngine](bool) {
@@ -1906,7 +1994,7 @@ void MainWindow::onMenuCommand(const QString &sId)
                 "渲染层：%3<br>"
                 "落盘配置：%4<br><br>"
                 "参考项目：MarkText v0.19.1（MIT License）<br>"
-                "上游仓库：https://github.com/marktext/marktext")
+                "源码副本：D:\\MarkText\\MarkTextSource0.19.1")
                 .arg(QLatin1String(qVersion()),
                      QSysInfo::prettyProductName(),
                      EditorHost::engineTitle(

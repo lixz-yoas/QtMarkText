@@ -80,6 +80,36 @@ public:
     /// 外壳主动打开一个文件（走渲染层开新标签）
     void openFileInRenderer(const QString &sPath);
 
+    //-----------------------------------------------------------------
+    //  会话恢复（对照 Electron main/ipc/state.ts 的 buffer state 机制）
+    //-----------------------------------------------------------------
+    //  原版 MarkText 的会话恢复走"渲染层自述 + 主进程落盘"：
+    //    保存：渲染层每次改动 debounce 1s 后 invoke("update-buffer-state", 快照)
+    //          —— 快照含 editor(tabs) / project / layout 三段；
+    //    恢复：启动时主进程把快照 emit("mt::load-state", 快照)
+    //          —— 渲染层 RESTORE_BUFFERED_STATE() 依此重建标签页与项目树。
+    //  本工程此前两个通道都没接：保存侧落到 fallback 丢了，恢复侧从不触发，
+    //  所以关掉再开永远回到空白页。这里把两段补齐。
+    //
+    //  与"最近文件列表"（ui/recentlyUsedFiles）的分工：
+    //    最近文件只是菜单里的一串路径，不承载会话（不恢复顺序/光标/项目树）；
+    //    会话快照才是"上次退出时开着哪些页"的真身，两者互不替代。
+    //
+    /// 渲染层上报会话快照（update-buffer-state）后由本层落盘。
+    /// 会先剔除未落盘的标签页（pathname 为空 / isSaved=false）：
+    /// 用户口径是"关闭时没有打开的文件就什么都不恢复"，
+    /// 纯 untitled 的会话没有恢复价值（内容本就留不住）。
+    void storeBufferedState(const QJsonObject &objState);
+
+    /// 把已落盘的会话快照下发给渲染层（emit mt::load-state）。
+    /// 无有效快照（文件不存在 / 已被清空）时返回 false，调用方据此
+    /// 走"空白首页 + 恢复上次目录"的老路。
+    bool restoreBufferedState();
+
+    /// 报告当前会话是否记录过至少一个已落盘的文件（供外壳判断是否要
+    /// 额外补发 mt::open-directory）。
+    bool hasRestorableSession() const;
+
     /// 渲染层是否已初始化完成
     bool isRendererReady() const { return m_bRendererReady; }
     /// 页面是否已就绪（env.js 已握手）
@@ -91,6 +121,12 @@ public:
 signals:
     /// 渲染层初始化完成（收到 mt::window-initialized）
     void rendererReady();
+    /// 会话快照已成功下发给渲染层（用于外壳判断"这次启动不是空白页"，
+    /// 从而跳过 mt::open-directory 的自动补发，避免抢掉会话里的项目树）
+    void sessionRestored();
+    /// 渲染层完成退出前握手（收到 mt::close-window / mt::close-window-confirm）：
+    /// 表示它已把最新会话快照刷出，外壳可以放行关闭了。
+    void closeWindowRequested();
     /// 文档标题变化
     void titleChanged(const QString &sTitle);
     /// 渲染层请求开外部链接
@@ -132,6 +168,12 @@ private:
 
     /// 未实现通道的统一兜底：记日志并按命名给出安全默认值
     QJsonValue fallbackInvoke(const QString &sChannel, const QJsonArray &arrArgs);
+
+    /// 会话快照落盘位置：ini 的 [session] 节（值为单行 JSON 串，
+    /// 用 ini 而非独立文件是为了跟偏好/最近文件一样"退出即 sync"）。
+    static QString sessionIniValueKey();
+    /// 从 ini 读回快照；无效（缺失/空串/JSON 坏/无有效页）时返回空对象
+    QJsonObject loadSessionFromIni() const;
 
     PreferencesStore *m_pStore;
 

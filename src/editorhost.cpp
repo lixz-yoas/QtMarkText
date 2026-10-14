@@ -287,6 +287,9 @@ WebView2EditorEngine::WebView2EditorEngine(QObject *pOwner, QWidget *pViewParent
 
     connect(m_pHost, &WebView2Host::documentTitleChanged, this,
             [this](const QString &sTitle) {
+                // 留一份原文供外壳判断（会话恢复时引擎 filePath 为空，
+                // 外壳标题要用渲染层的 document.title 兜底，见 mainwindow）
+                setProperty("docTitle", sTitle);
                 emit titleChanged(sTitle);
             });
 
