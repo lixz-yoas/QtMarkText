@@ -7901,3 +7901,33 @@ body article.print-container {
     max-width: 100%;
   }
 }
+
+/* ---- 20261014 外壳补丁：文档目录(TOC)字体调亮 ----
+ * 现象：目录树文字实测 rgb(96,98,102)（Element Plus 默认 #606266），偏暗。
+ * 根因：EP 新版把树节点标签渲染成 <span class="el-text is-truncated
+ *   el-tree-node__label">，基础样式 .el-text { color:/r/n *   var(--el-text-color-regular) } 声明在标签元素自身上，把上层
+ *   .side-bar-toc .el-tree 的 var(--sideBarColor) 继承链截断
+ *   （子元素自身声明优先于祖先继承，故仅改 .el-tree 不生效）。
+ * 方案：按需求取「主题正文亮度」与「目录当前亮度」的中点 —— color-mix
+ *   50/50 混合 var(--sideBarColor)(rgba(203,204,198,.6)) 与
+ *   var(--editorColor)(#cbccc6)，ayu-mirage 下合成约 rgba(203,204,198,.8)，
+ *   渲染约 rgb(168,168,166)。全部走 CSS 变量，切换主题自动跟随。
+ * color-mix 需要 Chromium 111+（WebView2 常青版满足）；不支持时本条声明
+ * 整条失效，自动回落到上方原规则 var(--sideBarColor) 继承链。 */
+.side-bar-toc .el-tree .el-tree-node__label {
+  color: color-mix(in srgb, var(--sideBarColor) 50%, var(--editorColor) 50%);
+}
+
+/* ---- 20261014 外壳补丁：编辑器分隔符(---)改为 3px 连续实线 ----
+ * 原规则用 ::before 画 2px dashed 虚线；按需求改为 3px 连续实线。
+ * 注意：各主题在运行时经 patchTheme 注入 <style>（晚于静态 CSS），自带
+ *   border-top: 2px dashed var(--editorColor10) !important，故本补丁须（同为 !important 时比
+ * 特异性）加 body 前缀提高特异性（(0,2,2) > 主题 (0,2,1)）才能胜出。
+ * 颜色沿用主题选定的 var(--editorColor10)（回落 var(--hrColor)），只改线型不改色。
+ * 光标移入时段落获 .ag-active，:not(.ag-active) 使本规则失效，
+ * 自动回落为显示 --- 源码（既有行为，无需额外处理）。 */
+body p:not(.ag-active)[data-role='hr']::before {
+  height: 0 !important;
+  border-top: 3px solid var(--editorColor10, var(--hrColor)) !important;
+  background: none !important;
+}
