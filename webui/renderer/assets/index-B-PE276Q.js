@@ -167034,6 +167034,10 @@ const _sfc_main$t = /* @__PURE__ */ defineComponent({
         dragBarEl.addEventListener("mousedown", mouseDownHandler, false);
       });
     });
+    const tocMaximized = /* @__PURE__ */ ref$1(false);
+    const toggleTocMaximized = () => {
+      tocMaximized.value = !tocMaximized.value;
+    };
     const handleLeftIconClick = (name2) => {
       if (rightColumn.value === name2) {
         layoutStore.SET_LAYOUT({ rightColumn: "" });
@@ -167082,14 +167086,23 @@ const _sfc_main$t = /* @__PURE__ */ defineComponent({
             }), 128))
           ])
         ]),
-        withDirectives(createBaseVNode("div", _hoisted_5$c, [
-          unref(rightColumn) === "files" ? (openBlock(), createBlock(Tree, {
-            key: 0,
+        withDirectives(createBaseVNode("div", {
+          class: normalizeClass(["right-column", { "toc-maximized": tocMaximized.value }])
+        }, [
+          unref(rightColumn) === "files" || unref(rightColumn) === "toc" ? (openBlock(), createElementBlock(Fragment, {
+            key: 0
+          }, [
+            createVNode(Tree, {
             "project-tree": unref(projectTree),
             "opened-files": openedFiles.value,
             tabs: unref(tabs)
-          }, null, 8, ["project-tree", "opened-files", "tabs"])) : unref(rightColumn) === "search" ? (openBlock(), createBlock(SideBarSearch, { key: 1 })) : unref(rightColumn) === "toc" ? (openBlock(), createBlock(_sfc_main$u, { key: 2 })) : createCommentVNode("", true)
-        ], 512), [
+          }, null, 8, ["project-tree", "opened-files", "tabs"]), createBaseVNode("div", {
+            class: "panel-split",
+            title: "双击：目录占满 / 还原",
+            onDblclick: toggleTocMaximized
+          }, null, 8, ["onDblclick"]), createVNode(_sfc_main$u, { key: 2 })
+          ], 64)) : unref(rightColumn) === "search" ? (openBlock(), createBlock(SideBarSearch, { key: 1 })) : createCommentVNode("", true)
+        ], 2), [
           [vShow, unref(rightColumn)]
         ]),
         withDirectives(createBaseVNode("div", {

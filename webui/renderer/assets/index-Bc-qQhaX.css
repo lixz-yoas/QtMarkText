@@ -7931,3 +7931,64 @@ body p:not(.ag-active)[data-role='hr']::before {
   border-top: 3px solid var(--editorColor10, var(--hrColor)) !important;
   background: none !important;
 }
+
+/* ---- 20261014 外壳补丁：文件管理目录与文档内部目录同时显示 ----
+ * 原状：right-column 内 files/search/toc 三元互斥渲染，切换时互相覆盖。
+ * JS 层（index-B-PE276Q.js）已把 files/toc 两分支合并为同一 Fragment（文件树
+ *   + 文档目录同时渲染）；本补丁负责布局：right-column 改纵向 flex，
+ *   文件树(.tree-view)与目录(.side-bar-toc)各占一半，各自内部滚动
+ *   (.project-tree/.tree-wrapper 与 .side-bar-toc-overflow 本就 overflow:auto)。
+ * search 单独显示时不受影响：height:100% 在纵向 flex 容器中仍正常。
+ * 切换 files/toc 图标时两分支输出相同 vnode（同 type 同 key），Vue 原地 patch
+ * 复用组件实例，展开状态/滚动位置不丢失。 */
+.right-column[data-v-d62b8d13] {
+  display: flex;
+  flex-direction: column;
+}
+.right-column > .tree-view {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+}
+.right-column > .side-bar-toc {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+}
+/* ---- 20261014 外壳补丁：双击面板分界线 —— 目录占满左栏、文件树只留标题 ----
+ * 交互：双击「文件管理树 / 文档目录」之间的分界线（.panel-split，8px 命中区），
+ *   文档目录 .side-bar-toc 占满右列，文件管理树 .tree-view 收成 35px 标题栏
+ *   （.tree-view > .title 高 35px，其余内容被 overflow:hidden 裁掉）；
+ *   再次双击还原为上下各半。
+ * 实现：JS（index-B-PE276Q.js）在 Tree 与 toc 之间插入 .panel-split 并绑定
+ *   dblclick → 切换 .right-column 上的 .toc-maximized 类。
+ * 说明：分界线只在右列显示 files/toc 时存在（search 分支不渲染）。 */
+
+.right-column > .panel-split {
+  flex: 0 0 8px;
+  min-height: 8px;
+  position: relative;
+  cursor: row-resize;
+}
+.right-column > .panel-split::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--itemBgColor);
+}
+.right-column > .panel-split:hover::after {
+  height: 2px;
+  background: var(--iconColor);
+}
+.right-column.toc-maximized > .tree-view {
+  flex: 0 0 35px;
+  height: 35px;
+  min-height: 0;
+  overflow: hidden;
+}
+.right-column.toc-maximized > .side-bar-toc {
+  flex: 1 1 auto;
+}
