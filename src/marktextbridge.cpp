@@ -12,6 +12,13 @@
 
 #include "marktextbridge.h"
 
+#include <QJsonDocument>
+#include <QPageSize>
+#include <QPrintDialog>
+#include <QPrinter>
+#include <QStandardPaths>
+#include <QTextDocument>
+
 #include "marktextthemes.h"
 
 #include <QApplication>
@@ -401,6 +408,12 @@ void MarkTextBridge::prepareInjection(WebView2Host *pHost)
 {
     if (pHost == nullptr || m_sWebUiDir.isEmpty()) {
         return;
+    }
+    // 记住宿主：导出/打印/自动保存要用它 executeScript 取页面内容
+    m_pHost = pHost;
+    if (!connect(pHost, &WebView2Host::executeScriptFinished,
+                 this, &MarkTextBridge::onScriptResult)) {
+        qWarning("MarkTextBridge: executeScriptFinished 连接失败");
     }
 
     // 虚拟主机映射：把 webui 目录挂到 https://marktext.local
@@ -1324,6 +1337,25 @@ void MarkTextBridge::registerSendHandlers()
                           emit shellActionRequested(QStringLiteral("open-directory"));
                       });
 
+    // ---- 导出回执：渲染层把 styledHtml 与元信息发回来，外壳弹框落盘 ----
+    // 载荷：{ type, title, content, filename, pathname, pageOptions }
+    // （官方主进程 handleResponseForExport 做的正是这件事）
+    m_hashSend.insert(QStringLiteral("mt::response-export"), [this](const QJsonArray &arrArgs) {
+        handleResponseForExport(arrArgs.at(0).toObject());
+    });
+    // ---- 打印回执：官方只发信号不带内容（它直接 webContents.print()）。
+    //      WebView2 无等价 API，故取整页 HTML 后用 QPrinter 打印。
+    m_hashSend.insert(QStringLiteral("mt::response-print"), [this](const QJsonArray &) {
+        grabPageHtml([this](const QString &sHtml) {
+            if (sHtml.isEmpty()) {
+                emit logMessage(QStringLiteral("warn"),
+                                QStringLiteral("打印失败：未能取到页面内容"));
+                return;
+            }
+            printHtml(sHtml);
+        });
+    });
+
     // ---- 布局状态（渲染层自绘侧边栏/标签栏）----
     // 渲染层 SET_LAYOUT/TOGGLE_LAYOUT_ENTRY 后会 DISPATCH_LAYOUT_MENU_ITEMS()：
     //   send("mt::view-layout-changed", windowId, { showTabBar, showSideBar })
@@ -1412,8 +1444,9 @@ void MarkTextBridge::registerSendHandlers()
         // "mt::update-sidebar-menu", "mt::update-format-menu", "mt::update-line-ending-menu"
         // "mt::editor-selection-changed"
         "mt::set-file-encoding", "mt::set-final-newline",
-        "mt::tab-saved", "mt::tab-save-failure", "mt::export-success", "mt::response-export",
-        "mt::response-print", "mt::response-file-save", "mt::response-file-save-as",
+        "mt::tab-saved", "mt::tab-save-failure", "mt::export-success",
+        // "mt::response-export" / "mt::response-print" 已在上面注册真实处理
+        "mt::response-file-save", "mt::response-file-save-as",
         "mt::response-file-move-to", "mt::rename", "mt::set-pathname", "mt::set-user-data",
         "mt::spelling-replace-misspelling", "mt::spelling-show-switch-language",
         "mt::force-close-tabs-by-id", "mt::switch-tab-by-index", "mt::switch-tab-by-file_path",
@@ -1876,15 +1909,15 @@ bool MarkTextBridge::routeMenuCommand(const QString &sMenuId)
         return true;
     }
     if (sMenuId == QLatin1String("exportHtmlMenuItem")) {
-        emitToRenderer(QStringLiteral("mt::show-export-dialog"), QJsonArray{ QStringLiteral("styledHtml") });
+        exportHtml();
         return true;
     }
     if (sMenuId == QLatin1String("exportPdfMenuItem")) {
-        emitToRenderer(QStringLiteral("mt::show-export-dialog"), QJsonArray{ QStringLiteral("pdf") });
+        exportPdf();
         return true;
     }
     if (sMenuId == QLatin1String("printMenuItem")) {
-        emitToRenderer(QStringLiteral("mt::show-export-dialog"), QJsonArray{ QStringLiteral("print") });
+        print();
         return true;
     }
 
@@ -1901,6 +1934,237 @@ bool MarkTextBridge::routeMenuCommand(const QString &sMenuId)
     }
 
     return false;
+}
+
+//=====================================================================
+//  导出 / 打印 / 取内容
+//
+//  背景：WebView2EditorEngine::markdownText() 返回空串（内容由渲染层持有），
+//        所以外壳侧的导出/打印/自动保存全都拿不到内容 —— 此前的实现是
+//        空转。本节改为对齐官方机制：让渲染层把内容发回来，外壳再落盘。
+//=====================================================================
+void MarkTextBridge::exportHtml()
+{
+    emitToRenderer(QStringLiteral("mt::show-export-dialog"),
+                   QJsonArray{ QStringLiteral("styledHtml") });
+}
+
+void MarkTextBridge::exportPdf()
+{
+    emitToRenderer(QStringLiteral("mt::show-export-dialog"),
+                   QJsonArray{ QStringLiteral("pdf") });
+}
+
+void MarkTextBridge::print()
+{
+    // 官方 printDocument 直接发 mt::show-export-dialog "print"，
+    // 渲染层 PRINT_RESPONSE() 回 mt::response-print（**不带内容**），
+    // 主进程靠 webContents.print() 直接打页面。
+    // WebView2 无 print() 等价 API，故收到该信号后取整页 HTML 再打印。
+    emitToRenderer(QStringLiteral("mt::show-export-dialog"),
+                   QJsonArray{ QStringLiteral("print") });
+}
+
+void MarkTextBridge::requestCurrentMarkdown()
+{
+    grabCurrentMarkdown([this](const QString &sMd) {
+        if (sMd.isEmpty()) {
+            emit logMessage(QStringLiteral("warn"),
+                            QStringLiteral("自动保存：未能取到当前文档内容"));
+        }
+        emit markdownReady(sMd);
+    });
+}
+
+void MarkTextBridge::onScriptResult(bool bSuccess, const QString &sResultJson)
+{
+    if (!bSuccess || m_fnScriptDone == nullptr) {
+        if (m_fnScriptDone != nullptr) {
+            m_fnScriptDone(QString());
+            m_fnScriptDone = nullptr;
+        }
+        return;
+    }
+    // executeScript 的结果是 JSON：字符串值、null，或对象/数组
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(sResultJson.toUtf8(), &err);
+    QString sValue;
+    if (err.error == QJsonParseError::NoError) {
+        if (doc.isNull()) {
+            sValue.clear();
+        } else if (doc.isObject() || doc.isArray()) {
+            // 返回的是对象/数组（不是我们要的字符串）——原样交回让调用方判断
+            sValue = QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+        } else {
+            // 字符串 / 数字 / 布尔：取其字面量
+            const QJsonValue v = doc.object();
+            sValue = v.toVariant().toString();
+            if (sValue.isEmpty() && !doc.isObject()) {
+                // QJsonDocument 顶层非对象时用 QJsonDocument::fromJson 的变体：
+                // 直接把原始 JSON 字面量剥掉引号
+                QString s = sResultJson.trimmed();
+                if (s.size() >= 2 && s.startsWith(QLatin1Char('"'))
+                        && s.endsWith(QLatin1Char('"'))) {
+                    sValue = s.mid(1, s.size() - 2);
+                }
+            }
+        }
+    } else {
+        // 不是合法 JSON（例如页面返回了裸文本）：按原文处理
+        sValue = sResultJson;
+    }
+
+    std::function<void(const QString &)> fnDone = m_fnScriptDone;
+    m_fnScriptDone = nullptr;
+    if (fnDone) {
+        fnDone(sValue);
+    }
+}
+
+void MarkTextBridge::grabPageHtml(const std::function<void(const QString &)> &fnDone)
+{
+    if (m_pHost == nullptr) {
+        if (fnDone) {
+            fnDone(QString());
+        }
+        return;
+    }
+    m_fnScriptDone = fnDone;
+    m_pHost->executeScript(QStringLiteral(
+        "(function(){try{return document.documentElement.outerHTML || '';}"
+        "catch(e){return '';}})()"));
+}
+
+void MarkTextBridge::grabCurrentMarkdown(const std::function<void(const QString &)> &fnDone)
+{
+    if (m_pHost == nullptr) {
+        if (fnDone) {
+            fnDone(QString());
+        }
+        return;
+    }
+    // 取编辑器当前内容。渲染层正文在 CodeMirror/Muya 的编辑器实例里，
+    // 拿不到时退回 DOM 文本（内容仍可能不完整，故取不到就报"未能取到内容"，
+    // 由调用方决定不落盘 —— 绝不能把空串写进文件）。
+    m_fnScriptDone = fnDone;
+    m_pHost->executeScript(QStringLiteral(
+        "(function(){try{"
+        "  var root = typeof window !== 'undefined' ? window : {};"
+        "  // 渲染层把 Vuex store 挂在 window.marktext 上"
+        "  if (root.marktext && root.marktext.store) {"
+        "    var st = root.marktext.store.state;"
+        "    if (st && st.editor && st.editor.currentFile"
+        "        && typeof st.editor.currentFile.markdown === 'string') {"
+        "      return st.editor.currentFile.markdown;"
+        "    }"
+        "  }"
+        "  var el = document.querySelector('.ag-render-buffer')"
+        "         || document.querySelector('#editor')"
+        "         || document.querySelector('.CodeMirror');"
+        "  return el ? (el.innerText || el.textContent || '') : '';"
+        "}catch(e){return '';}})()"));
+}
+
+void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
+{
+    const QString sType     = objPayload.value(QStringLiteral("type")).toString();
+    const QString sContent  = objPayload.value(QStringLiteral("content")).toString();
+    const QString sTitle    = objPayload.value(QStringLiteral("title")).toString();
+    const QString sPathname = objPayload.value(QStringLiteral("pathname")).toString();
+    const QString sFilename = objPayload.value(QStringLiteral("filename")).toString();
+
+    if (sContent.isEmpty()) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("导出失败：渲染层未返回内容"));
+        return;
+    }
+
+    // 默认文件名：正文标题 → 源文件名 → Untitled（对齐官方 handleResponseForExport）
+    QString sNaked = sPathname.isEmpty()
+        ? sTitle
+        : QFileInfo(sPathname).completeBaseName();
+    if (sNaked.isEmpty()) {
+        sNaked = sFilename.isEmpty() ? QStringLiteral("Untitled")
+                                     : QFileInfo(sFilename).completeBaseName();
+    }
+    sNaked = sanitizeFileName(sNaked.isEmpty() ? QStringLiteral("Untitled") : sNaked);
+
+    const bool bPdf   = (sType == QLatin1String("pdf"));
+    const QString sExt = bPdf ? QStringLiteral(".pdf") : QStringLiteral(".html");
+
+    QString sDir = sPathname.isEmpty()
+        ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+        : QFileInfo(sPathname).absolutePath();
+    if (sDir.isEmpty()) {
+        sDir = QDir::homePath();
+    }
+
+    const QString sTarget = QFileDialog::getSaveFileName(
+        m_pShellWindow,
+        bPdf ? QStringLiteral("导出为 PDF") : QStringLiteral("导出为 HTML"),
+        QDir(sDir).filePath(sNaked + sExt),
+        bPdf ? QStringLiteral("PDF 文件 (*.pdf)")
+             : QStringLiteral("HTML 文件 (*.html)"));
+    if (sTarget.isEmpty()) {
+        emit logMessage(QStringLiteral("info"), QStringLiteral("导出对话框被取消"));
+        return;
+    }
+
+    if (bPdf) {
+        // 用 QTextDocument 渲染成 PDF。
+        // ⚠ 取舍：QTextDocument 只支持有限 HTML/CSS，复杂样式会被简化 ——
+        //   这是 WebView2 没有 printToPDF() 的替代方案，保证「能出 PDF」，
+        //   不保证与屏幕渲染像素级一致。
+        QTextDocument doc;
+        doc.setHtml(sContent);
+        QPrinter printer(QPrinter::HighResolution);
+        printer.setOutputFormat(QPrinter::PdfFormat);
+        printer.setOutputFileName(sTarget);
+        doc.print(&printer);
+    } else {
+        QFile file(sTarget);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            emit logMessage(QStringLiteral("warn"),
+                            QStringLiteral("导出失败：无法写入 ") + sTarget);
+            return;
+        }
+        file.write(sContent.toUtf8());
+        file.close();
+    }
+
+    emit logMessage(QStringLiteral("info"), QStringLiteral("已导出：") + sTarget);
+    // 回报渲染层，好让它弹「导出成功」并定位文件（对齐官方 mt::export-success）
+    emitToRenderer(QStringLiteral("mt::export-success"),
+                   QJsonArray{ QJsonObject{
+                       { QStringLiteral("type"), sType },
+                       { QStringLiteral("filePath"), sTarget } } });
+}
+
+void MarkTextBridge::printHtml(const QString &sHtml)
+{
+    QPrinter printer(QPrinter::HighResolution);
+    printer.setDocName(QStringLiteral("QtMarkText"));
+
+    // Qt 5.12 的签名是 QPrintDialog(QPrinter *printer, QWidget *parent = nullptr)
+    QPrintDialog dlg(&printer, m_pShellWindow);
+    dlg.setWindowTitle(QStringLiteral("打印"));
+    if (dlg.exec() != QDialog::Accepted) {
+        emit logMessage(QStringLiteral("info"), QStringLiteral("打印对话框被取消"));
+        return;
+    }
+
+    // 打印对话框里可能选了"打印到文件"→此时 outputFormat 是 PdfFormat
+    QTextDocument doc;
+    doc.setHtml(sHtml);
+    doc.print(&printer);
+
+    if (printer.outputFormat() == QPrinter::PdfFormat
+            && !printer.outputFileName().isEmpty()) {
+        emit logMessage(QStringLiteral("info"),
+                        QStringLiteral("已输出：") + printer.outputFileName());
+    } else {
+        emit logMessage(QStringLiteral("info"), QStringLiteral("已送往打印机"));
+    }
 }
 
 double MarkTextBridge::zoomBy(bool bZoomIn)

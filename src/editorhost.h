@@ -186,6 +186,9 @@ public:
     /// 对应 Electron 的 webContents.toggleDevTools()。返回 false 表示宿主未就绪。
     bool openDevTools();
 
+    /// 供桥接层取用WebView2 宿主（导出/打印/自动保存要executeScript 取页面内容）
+    WebView2Host *host() const { return m_pHost; }
+
     /// 重新加载渲染层（菜单「重新加载窗口 / Ctrl+F5」）。
     /// 对应 Electron 的 window-reload-by-id。返回 false 表示宿主未就绪。
     bool reload();

@@ -5,6 +5,7 @@
 #-------------------------------------------------
 
 QT += core gui widgets network   # network: QLocalServer/QLocalSocket 单实例命名管道
+QT += printsupport               # QPrinter / QPrintDialog：菜单「导出为 PDF」「打印」需要
 
 TARGET = QtMarkText
 TEMPLATE = app
@@ -68,3 +69,13 @@ HEADERS += \
     src/markdownparser.h \
     src/markdownrenderer.h \
     src/markdowneditor.h
+
+#-------------------------------------------------
+# Windows 资源：exe 图标 + 版本信息
+#
+# 说明：资源脚本单独放 resources/ 目录，用绝对路径登记。
+#       resources/QtMarkText.rc 里引用的 QtMarkText.ico 是 **相对 rc 所在目录**
+#       解析的，windres 会带上 -I<rc 目录>，故此处无需再写 INCLUDEPATH。
+#       编码 UTF-8(无 BOM) + CRLF，与 src/*.cpp 口径一致。
+#-------------------------------------------------
+RC_FILE = $$PWD/resources/QtMarkText.rc

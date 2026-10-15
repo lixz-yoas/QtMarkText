@@ -213,6 +213,13 @@ void MarkTextMenu::setVisibleById(const QString &sId, bool bVisible)
 //  渲染层状态回传 → 菜单勾选 / 可用态
 //  逐条对照主进程 updateFormatMenu / setCheckedMenuItem /
 //  updateSelectionMenus / updateLineEndingMenu 的语义。
+//
+//  ⚠ 20261015 起「段落」「格式」两组菜单项已改为**不可勾选**
+//     （需求：点击时不用勾选）。故下面两处 setChecked 打在非 checkable
+//     的 action 上**不会显示任何勾**，属预期行为，不是失效代码——
+//     逻辑保留是为了将来要恢复勾选时不用重写映射表。
+//     其中 setEnabled（多行选区/ 代码块内置灰）**仍然有效**，
+//     它与勾选是两件独立的事。
 //=====================================================================
 namespace {
 
@@ -448,7 +455,9 @@ void MarkTextMenu::buildFileMenu(QMenuBar *pBar)
     QMenu *pMenu = pBar->addMenu(QStringLiteral("文件"));           // menu.file.file
 
     addCommand(pMenu, QStringLiteral("newTabMenuItem"),   QStringLiteral("新建标签页"),   QStringLiteral("Ctrl+T"));       // file.new-tab
-    addCommand(pMenu, QStringLiteral("newWindowMenuItem"),QStringLiteral("新建窗口"),     QStringLiteral("Ctrl+N"));       // file.new-window
+    // 「新建窗口」按需求隐藏。
+    // 底层实现（MainWindow::onMenuCommand 里 new MainWindow）原样保留，取消注释即恢复。
+    // addCommand(pMenu, QStringLiteral("newWindowMenuItem"), QStringLiteral("新建窗口"), QStringLiteral("Ctrl+N"));
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("openFileMenuItem"), QStringLiteral("打开文件…"),   QStringLiteral("Ctrl+O"));       // file.open-file
@@ -466,7 +475,11 @@ void MarkTextMenu::buildFileMenu(QMenuBar *pBar)
 
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("moveToMenuItem"), QStringLiteral("移动到"));                                          // file.move-file（无默认键位）
+    // 「移动到」按需求隐藏。
+    // 注意：它在渲染层引擎下并不可用 —— WebView2EditorEngine::markdownText() 返回空串，
+    //       重命名/移动会拿不到内容；详见 readme.md 本节。
+    // 底层 moveCurrentFile() 与 bridge 路由均保留，取消注释即恢复。
+    // addCommand(pMenu, QStringLiteral("moveToMenuItem"), QStringLiteral("移动到"));
     addCommand(pMenu, QStringLiteral("renameMenuItem"), QStringLiteral("重命名"));                                          // file.rename-file（无默认键位）
 
     addSeparator(pMenu);
@@ -487,7 +500,9 @@ void MarkTextMenu::buildFileMenu(QMenuBar *pBar)
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("closeTabMenuItem"),    QStringLiteral("关闭标签页"), QStringLiteral("Ctrl+W"));       // file.close-tab
-    addCommand(pMenu, QStringLiteral("closeWindowMenuItem"), QStringLiteral("关闭窗口"),   QStringLiteral("Ctrl+Shift+W")); // file.close-window
+    // 「关闭窗口」按需求隐藏（与顶部自绘的关闭按钮重复）。
+    // 底层 close() 分支保留，取消注释即恢复。
+    // addCommand(pMenu, QStringLiteral("closeWindowMenuItem"), QStringLiteral("关闭窗口"), QStringLiteral("Ctrl+Shift+W"));
 
     addSeparator(pMenu);
 
@@ -540,9 +555,10 @@ void MarkTextMenu::buildEditMenu(QMenuBar *pBar)
     addCommand(pMenu, QStringLiteral("pasteMenuItem"), QStringLiteral("粘贴"), QStringLiteral("Ctrl+V"));      // edit.paste
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("copyAsRichMenuItem"),   QStringLiteral("复制为富文本"), QStringLiteral("Ctrl+Shift+C")); // edit.copy-as-rich
-    addCommand(pMenu, QStringLiteral("copyAsHtmlMenuItem"),   QStringLiteral("复制为 HTML"));                                  // edit.copy-as-html（无默认键位）
-    addCommand(pMenu, QStringLiteral("pasteAsPlainTextMenuItem"), QStringLiteral("粘贴为纯文本"), QStringLiteral("Ctrl+Shift+V")); // edit.paste-as-plaintext
+    //以下三项按需求隐藏。底层 kEditRoutes 路由与渲染层 listener 均保留，取消注释即恢复。
+    // addCommand(pMenu, QStringLiteral("copyAsRichMenuItem"), QStringLiteral("复制为富文本"), QStringLiteral("Ctrl+Shift+C"));
+    // addCommand(pMenu, QStringLiteral("copyAsHtmlMenuItem"), QStringLiteral("复制为 HTML"));
+    // addCommand(pMenu, QStringLiteral("pasteAsPlainTextMenuItem"), QStringLiteral("粘贴为纯文本"), QStringLiteral("Ctrl+Shift+V"));
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("selectAllMenuItem"), QStringLiteral("全选"), QStringLiteral("Ctrl+A"));  // edit.select-all
@@ -557,9 +573,9 @@ void MarkTextMenu::buildEditMenu(QMenuBar *pBar)
     addCommand(pMenu, QStringLiteral("findNextMenuItem"),     QStringLiteral("查找下一个"), QStringLiteral("F3"));          // edit.find-next
     addCommand(pMenu, QStringLiteral("findPreviousMenuItem"), QStringLiteral("查找上一个"), QStringLiteral("Shift+F3"));   // edit.find-previous
     addCommand(pMenu, QStringLiteral("replaceMenuItem"),      QStringLiteral("替换"),       QStringLiteral("Ctrl+R"));      // edit.replace
-    addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("findInFolderMenuItem"), QStringLiteral("在文件夹中查找"), QStringLiteral("Ctrl+Shift+F")); // edit.find-in-folder
+    // 「在文件夹中查找」按需求隐藏。底层路由与渲染层 layoutStore 联动均保留。
+    // addCommand(pMenu, QStringLiteral("findInFolderMenuItem"), QStringLiteral("在文件夹中查找"), QStringLiteral("Ctrl+Shift+F"));
 
     // 「截图」按官方口径不注册：templates/edit.ts 标了 visible: isOsx$1，
     // 它走的是 Electron desktopCapturer（macOS 专有）。本工程此前无条件建出来，
@@ -589,12 +605,12 @@ void MarkTextMenu::buildParagraphMenu(QMenuBar *pBar)
     // 六级标题是官方 templates/paragraph.ts 里真实存在的一项
     // （bridge 路由表也早备好了 "heading 6"），此前菜单只建到 5，
     // 于是 Markdown 的 h6 根本点不出来 —— 与官方菜单不一致。
-    addCommand(pMenu, QStringLiteral("heading1MenuItem"), QStringLiteral("标题 1"), QString(), true);
-    addCommand(pMenu, QStringLiteral("heading2MenuItem"), QStringLiteral("标题 2"), QString(), true);
-    addCommand(pMenu, QStringLiteral("heading3MenuItem"), QStringLiteral("标题 3"), QString(), true);
-    addCommand(pMenu, QStringLiteral("heading4MenuItem"), QStringLiteral("标题 4"), QString(), true);
-    addCommand(pMenu, QStringLiteral("heading5MenuItem"), QStringLiteral("标题 5"), QString(), true);
-    addCommand(pMenu, QStringLiteral("heading6MenuItem"), QStringLiteral("标题 6"), QString(), true);
+    addCommand(pMenu, QStringLiteral("heading1MenuItem"), QStringLiteral("标题 1"), QString(), false);
+    addCommand(pMenu, QStringLiteral("heading2MenuItem"), QStringLiteral("标题 2"), QString(), false);
+    addCommand(pMenu, QStringLiteral("heading3MenuItem"), QStringLiteral("标题 3"), QString(), false);
+    addCommand(pMenu, QStringLiteral("heading4MenuItem"), QStringLiteral("标题 4"), QString(), false);
+    addCommand(pMenu, QStringLiteral("heading5MenuItem"), QStringLiteral("标题 5"), QString(), false);
+    addCommand(pMenu, QStringLiteral("heading6MenuItem"), QStringLiteral("标题 6"), QString(), false);
     addSeparator(pMenu);
 
     // 提升/降低标题：官方 templates/paragraph.ts 里这两项**没有** type:"checkbox"
@@ -604,24 +620,24 @@ void MarkTextMenu::buildParagraphMenu(QMenuBar *pBar)
     addCommand(pMenu, QStringLiteral("degradeHeadingMenuItem"), QStringLiteral("降低标题级别"), QStringLiteral("Ctrl+-"), false);     // paragraph.degrade-heading
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("tableMenuItem"),      QStringLiteral("表格"),     QStringLiteral("Ctrl+Shift+T"), true);  // paragraph.table
-    addCommand(pMenu, QStringLiteral("codeFencesMenuItem"), QStringLiteral("代码围栏"), QStringLiteral("Ctrl+Shift+K"), true);  // paragraph.code-fence
-    addCommand(pMenu, QStringLiteral("quoteBlockMenuItem"), QStringLiteral("引用块"),   QStringLiteral("Ctrl+Shift+Q"), true);  // paragraph.quote-block
-    addCommand(pMenu, QStringLiteral("mathBlockMenuItem"),  QStringLiteral("数学块"),   QStringLiteral("Ctrl+Alt+N"), true);    // paragraph.math-formula
-    addCommand(pMenu, QStringLiteral("htmlBlockMenuItem"),  QStringLiteral("HTML 块"),  QStringLiteral("Ctrl+Alt+H"), true);    // paragraph.html-block
+    addCommand(pMenu, QStringLiteral("tableMenuItem"),      QStringLiteral("表格"),     QStringLiteral("Ctrl+Shift+T"), false);  // paragraph.table
+    addCommand(pMenu, QStringLiteral("codeFencesMenuItem"), QStringLiteral("代码围栏"), QStringLiteral("Ctrl+Shift+K"), false);  // paragraph.code-fence
+    addCommand(pMenu, QStringLiteral("quoteBlockMenuItem"), QStringLiteral("引用块"),   QStringLiteral("Ctrl+Shift+Q"), false);  // paragraph.quote-block
+    addCommand(pMenu, QStringLiteral("mathBlockMenuItem"),  QStringLiteral("数学块"),   QStringLiteral("Ctrl+Alt+N"), false);    // paragraph.math-formula
+    addCommand(pMenu, QStringLiteral("htmlBlockMenuItem"),  QStringLiteral("HTML 块"),  QStringLiteral("Ctrl+Alt+H"), false);    // paragraph.html-block
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("orderListMenuItem"),  QStringLiteral("有序列表"), QStringLiteral("Ctrl+G"), true);        // paragraph.order-list
-    addCommand(pMenu, QStringLiteral("bulletListMenuItem"), QStringLiteral("无序列表"), QStringLiteral("Ctrl+H"), true);        // paragraph.bullet-list
-    addCommand(pMenu, QStringLiteral("taskListMenuItem"),   QStringLiteral("任务列表"), QStringLiteral("Ctrl+Alt+X"), true);    // paragraph.task-list
+    addCommand(pMenu, QStringLiteral("orderListMenuItem"),  QStringLiteral("有序列表"), QStringLiteral("Ctrl+G"), false);        // paragraph.order-list
+    addCommand(pMenu, QStringLiteral("bulletListMenuItem"), QStringLiteral("无序列表"), QStringLiteral("Ctrl+H"), false);        // paragraph.bullet-list
+    addCommand(pMenu, QStringLiteral("taskListMenuItem"),   QStringLiteral("任务列表"), QStringLiteral("Ctrl+Alt+X"), false);    // paragraph.task-list
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("looseListItemMenuItem"), QStringLiteral("宽松列表项"), QStringLiteral("Ctrl+Alt+L"), true); // paragraph.loose-list-item
+    addCommand(pMenu, QStringLiteral("looseListItemMenuItem"), QStringLiteral("宽松列表项"), QStringLiteral("Ctrl+Alt+L"), false); // paragraph.loose-list-item
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("paragraphMenuItem"),      QStringLiteral("段落"),       QStringLiteral("Ctrl+Shift+0"), true); // paragraph.paragraph
-    addCommand(pMenu, QStringLiteral("horizontalLineMenuItem"), QStringLiteral("水平分割线"), QStringLiteral("Ctrl+Shift+U"), true); // paragraph.horizontal-line
-    addCommand(pMenu, QStringLiteral("frontMatterMenuItem"),    QStringLiteral("前置元数据"), QStringLiteral("Ctrl+Alt+Y"), true);   // paragraph.front-matter
+    addCommand(pMenu, QStringLiteral("paragraphMenuItem"),      QStringLiteral("段落"),       QStringLiteral("Ctrl+Shift+0"), false); // paragraph.paragraph
+    addCommand(pMenu, QStringLiteral("horizontalLineMenuItem"), QStringLiteral("水平分割线"), QStringLiteral("Ctrl+Shift+U"), false); // paragraph.horizontal-line
+    addCommand(pMenu, QStringLiteral("frontMatterMenuItem"),    QStringLiteral("前置元数据"), QStringLiteral("Ctrl+Alt+Y"), false);   // paragraph.front-matter
 }
 
 //=====================================================================
@@ -633,23 +649,23 @@ void MarkTextMenu::buildFormatMenu(QMenuBar *pBar)
     QMenu *pMenu = pBar->addMenu(QStringLiteral("格式"));            // menu.format.format
     pMenu->setObjectName(QStringLiteral("formatMenuItem"));
 
-    addCommand(pMenu, QStringLiteral("strongMenuItem"),    QStringLiteral("粗体"),   QStringLiteral("Ctrl+B"), true);   // format.strong
-    addCommand(pMenu, QStringLiteral("emphasisMenuItem"),  QStringLiteral("斜体"),   QStringLiteral("Ctrl+I"), true);   // format.emphasis
-    addCommand(pMenu, QStringLiteral("underlineMenuItem"), QStringLiteral("下划线"), QStringLiteral("Ctrl+U"), true);   // format.underline
+    addCommand(pMenu, QStringLiteral("strongMenuItem"),    QStringLiteral("粗体"),   QStringLiteral("Ctrl+B"), false);   // format.strong
+    addCommand(pMenu, QStringLiteral("emphasisMenuItem"),  QStringLiteral("斜体"),   QStringLiteral("Ctrl+I"), false);   // format.emphasis
+    addCommand(pMenu, QStringLiteral("underlineMenuItem"), QStringLiteral("下划线"), QStringLiteral("Ctrl+U"), false);   // format.underline
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("superscriptMenuItem"), QStringLiteral("上标"), QString(), true);                  // format.superscript（无默认键位）
-    addCommand(pMenu, QStringLiteral("subscriptMenuItem"),   QStringLiteral("下标"), QString(), true);                  // format.subscript（无默认键位）
-    addCommand(pMenu, QStringLiteral("highlightMenuItem"),   QStringLiteral("高亮"), QStringLiteral("Ctrl+Shift+H"), true); // format.highlight
+    addCommand(pMenu, QStringLiteral("superscriptMenuItem"), QStringLiteral("上标"), QString(), false);                  // format.superscript（无默认键位）
+    addCommand(pMenu, QStringLiteral("subscriptMenuItem"),   QStringLiteral("下标"), QString(), false);                  // format.subscript（无默认键位）
+    addCommand(pMenu, QStringLiteral("highlightMenuItem"),   QStringLiteral("高亮"), QStringLiteral("Ctrl+Shift+H"), false); // format.highlight
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("inlineCodeMenuItem"), QStringLiteral("行内代码"), QStringLiteral("Ctrl+`"), true);      // format.inline-code
-    addCommand(pMenu, QStringLiteral("inlineMathMenuItem"), QStringLiteral("行内数学"), QStringLiteral("Ctrl+Shift+M"), true); // format.inline-math
+    addCommand(pMenu, QStringLiteral("inlineCodeMenuItem"), QStringLiteral("行内代码"), QStringLiteral("Ctrl+`"), false);      // format.inline-code
+    addCommand(pMenu, QStringLiteral("inlineMathMenuItem"), QStringLiteral("行内数学"), QStringLiteral("Ctrl+Shift+M"), false); // format.inline-math
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("strikeMenuItem"),    QStringLiteral("删除线"), QStringLiteral("Ctrl+D"), true);        // format.strike
-    addCommand(pMenu, QStringLiteral("hyperlinkMenuItem"), QStringLiteral("超链接"), QStringLiteral("Ctrl+L"), true);        // format.hyperlink
-    addCommand(pMenu, QStringLiteral("imageMenuItem"),     QStringLiteral("图片"),   QStringLiteral("Ctrl+Shift+I"), true);  // format.image
+    addCommand(pMenu, QStringLiteral("strikeMenuItem"),    QStringLiteral("删除线"), QStringLiteral("Ctrl+D"), false);        // format.strike
+    addCommand(pMenu, QStringLiteral("hyperlinkMenuItem"), QStringLiteral("超链接"), QStringLiteral("Ctrl+L"), false);        // format.hyperlink
+    addCommand(pMenu, QStringLiteral("imageMenuItem"),     QStringLiteral("图片"),   QStringLiteral("Ctrl+Shift+I"), false);  // format.image
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("clearFormatMenuItem"), QStringLiteral("清除格式"), QStringLiteral("Ctrl+Shift+R"));    // format.clear-format

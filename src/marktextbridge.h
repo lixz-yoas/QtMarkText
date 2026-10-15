@@ -82,6 +82,30 @@ public:
     /// bZoomIn=true 放大，false 缩小。返回实际生效的缩放值（未就绪时返回 0）。
     double zoomBy(bool bZoomIn);
 
+    //-----------------------------------------------------------------
+    //  导出 / 打印（对照官方 main/menu/actions/file.ts 与主进程
+    //  handleResponseForExport / handleResponseForPrint）
+    //
+    //  机制与「保存」同构：渲染层先把内容发回来（mt::response-export /
+    //  mt::response-print），外壳再弹框落盘。
+    //  官方主进程用 webContents.printToPDF / print() 出 PDF 与打印，
+    //  WebView2 无等价 API，故改用「渲染层交回带样式的 HTML →
+    //  外壳用 QTextDocument 渲染成 PDF / 送打印机」。
+    //-----------------------------------------------------------------
+    /// 导出为 HTML（type = "styledHtml"）
+    void exportHtml();
+    /// 导出为 PDF（type = "pdf"）
+    void exportPdf();
+    /// 打印（type = "print"）
+    void print();
+
+    /// 向渲染层要当前文档的 markdown 原文（供自动保存落盘）。
+    /// 渲染层回传见 markdownReady 信号。
+    void requestCurrentMarkdown();
+
+    /// 记住宿主：executeScript 要用它，且要接 executeScriptFinished 信号
+    void setHost(WebView2Host *pHost) { m_pHost = pHost; }
+
     /// 把「菜单项 -> 快捷键」灌进来（供渲染层命令面板显示）
     void setKeybindings(const QList<QPair<QString, QString> > &listKeybindings);
 
@@ -127,6 +151,9 @@ public:
     void setShellWindow(QWidget *pWindow);
 
 signals:
+    /// 渲染层回传的当前文档 markdown（供自动保存落盘）
+    void markdownReady(const QString &sMarkdown);
+
     /// 渲染层初始化完成（收到 mt::window-initialized）
     void rendererReady();
     /// 会话快照已成功下发给渲染层（用于外壳判断"这次启动不是空白页"，
@@ -170,6 +197,10 @@ signals:
     void lineEndingMenuStateChanged(const QString &sLineEnding);
 
 private:
+    /// WebView2 executeScript 的回执（结果为 JSON 字符串）——
+    /// 命中 m_fnScriptDone 里暂存的回调
+    void onScriptResult(bool bSuccess, const QString &sResultJson);
+
     void registerInvokeHandlers();
     void registerSendHandlers();
     void handleInvoke(const QJsonObject &objMsg);
@@ -185,6 +216,15 @@ private:
     QString readLocaleJson(const QString &sLanguage) const;
     /// write-file / output-file 的公共落盘实现（数据可能是字符串或二进制标记）
     bool writeFileFromArgs(const QJsonArray &arrArgs);
+
+    /// 渲染层 mt::response-export 的回执处理：弹框 + 落盘
+    void handleResponseForExport(const QJsonObject &objPayload);
+    /// 取当前页面整页 HTML（用于打印；官方靠 webContents.print()，WebView2 无等价 API）
+    void grabPageHtml(const std::function<void(const QString &)> &fnDone);
+    /// 取当前文档的 markdown 原文（自动保存用）
+    void grabCurrentMarkdown(const std::function<void(const QString &)> &fnDone);
+    /// 用 QPrinter + QTextDocument 打印一段 HTML
+    void printHtml(const QString &sHtml);
     /// 渲染层 mt::response-file-save / -save-as：把渲染层发回的 markdown 落盘，
     /// 并按"新文件 / 覆盖保存"回 mt::set-pathname 或 mt::tab-saved。
     /// 参数顺序：id, filename, pathname, markdown, options, defaultPath
@@ -205,6 +245,13 @@ private:
 
     PostJsonFn m_fnPost;
     QString    m_sWebUiDir;
+
+    /// WebView2 宿主：executeScript 取页面内容要用；
+    /// 其executeScriptFinished 信号由 setHost() 里接到 onScriptResult()。
+    WebView2Host *m_pHost = nullptr;
+
+    /// executeScript 的异步回调（同一时刻只会有一个在等）
+    std::function<void(const QString &)> m_fnScriptDone;
 
     bool m_bBridgeReady;
     bool m_bRendererReady;

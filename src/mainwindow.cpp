@@ -402,14 +402,35 @@ MainWindow::MainWindow(QWidget *pParent)
             return;
         }
         IEditorEngine *pEngine = currentEngine();
-        if (pEngine == nullptr || pEngine->filePath().isEmpty() || !pEngine->isModified()) {
+        if (pEngine == nullptr || pEngine->filePath().isEmpty()) {
             return;
         }
-        if (pEngine->saveToFile(pEngine->filePath())) {
-            statusBar()->showMessage(
-                QStringLiteral("已自动保存：%1").arg(pEngine->filePath()), 3000);
-            refreshTitle();
+        MarkTextBridge *pBridge = pEngine->bridge();
+        if (pBridge == nullptr) {
+            return;   // 占位引擎：文本由它自己持有，落盘逻辑在别处
         }
+        // ★ 关键：渲染层引擎的 markdownText() 返回空串（内容由渲染层持有），
+        //   此前直接 saveToFile() 会把文件**写成空**。改为向渲染层要内容，
+        //   拿回来后再落盘。
+        const QString sPath = pEngine->filePath();
+        connect(pBridge, &MarkTextBridge::markdownReady, this,
+                [this, sPath](const QString &sMd) {
+                    if (sMd.isEmpty()) {
+                        // 取不到内容就**不落盘**，绝不拿空串覆盖用户文件
+                        statusBar()->showMessage(
+                            QStringLiteral("自动保存已跳过：未能取到文档内容"), 3000);
+                        return;
+                    }
+                    QFile file(sPath);
+                    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                        return;
+                    }
+                    file.write(sMd.toUtf8());
+                    file.close();
+                    statusBar()->showMessage(
+                        QStringLiteral("已自动保存：%1").arg(sPath), 3000);
+                }, Qt::UniqueConnection);
+        pBridge->requestCurrentMarkdown();
     });
 
     applyShellTheme();
@@ -1241,6 +1262,10 @@ IEditorEngine *MainWindow::addEditorTab()
 
     // 渲染层标题栏的窗口按钮（最小化/最大化/关闭/全屏）→ 外壳执行
     if (pEngine->bridge() != nullptr) {
+        // 把宿主交给桥接层：导出/打印/自动保存要用它 executeScript 取页面内容
+        if (WebView2EditorEngine *pWv2 = qobject_cast<WebView2EditorEngine *>(pEngine)) {
+            pEngine->bridge()->setHost(pWv2->host());
+        }
         connect(pEngine->bridge(), &MarkTextBridge::windowActionRequested,
                 this, &MainWindow::onWindowAction);
         // 渲染层启动时会用 mt::ask-for-user-preference 拉一遍偏好，其中 theme 是
