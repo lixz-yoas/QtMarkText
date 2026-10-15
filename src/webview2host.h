@@ -89,6 +89,15 @@ public:
     bool mapVirtualHost(const QString &sHostName, const QString &sFolderPath);
     void navigate(const QString &sUrl);
     void navigateToString(const QString &sHtml);
+    /// 重新加载当前页面（对应菜单「重新加载窗口 / Ctrl+F5」）。
+    ///
+    /// 为什么不用 ICoreWebView2::Reload()：它只重新取一次文档，
+    /// 而本工程的环境（env.js 垫片、虚拟主机映射）依赖启动时注册的那一批
+    /// AddScriptToExecuteOnDocumentCreated —— 那些脚本是"文档创建时"注入的，
+    /// 重新导航才会再跑一遍。故这里显式重新导航到当前 URL，
+    /// 保证垫片与渲染层状态完整重置。
+    /// 返回 false 表示控制器未就绪。
+    bool reload();
 
     /// 页面加载前注入脚本；按调用先后顺序执行
     bool addInitScript(const QString &sJs);

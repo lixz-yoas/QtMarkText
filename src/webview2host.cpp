@@ -242,6 +242,10 @@ struct WebView2Host::Impl
     bool bEnvOk = false;
     bool bCtlOk = false;
 
+    /// 最后一次 navigate() 的目标地址（reload() 据此重新导航）。
+    /// 只记 navigate()，不记 navigateToString() —— 后者是临时文档，没有可重放的 URL。
+    QString sLastUrl;
+
     /// 默认背景色（COREWEBVIEW2_COLOR）：控制器创建完成时应用，
     /// 消除"页面加载前闪白"。bDefaultBgSet=false 时保持 WebView2 默认（白）。
     COLORREF crDefaultBg = 0;
@@ -1076,7 +1080,25 @@ void WebView2Host::navigate(const QString &sUrl)
     if (m_pImpl->pWebView == nullptr) {
         return;
     }
+    m_pImpl->sLastUrl = sUrl;
     m_pImpl->pWebView->Navigate(reinterpret_cast<const wchar_t *>(sUrl.utf16()));
+}
+
+bool WebView2Host::reload()
+{
+    if (m_pImpl == nullptr || m_pImpl->pWebView == nullptr) {
+        return false;
+    }
+    if (m_pImpl->sLastUrl.isEmpty()) {
+        // 没有可重放的地址（只走过 navigateToString），退回内核自带 Reload
+        m_pImpl->pWebView->Reload();
+        return true;
+    }
+    // 重新导航而不是 Reload()：启动时注册的那批初始化脚本
+    // （env.js 垫片等）是 AddScriptToExecuteOnDocumentCreated，
+    // 走完整导航才会重新执行，垫片状态才能干净复位。
+    navigate(m_pImpl->sLastUrl);
+    return true;
 }
 
 void WebView2Host::navigateToString(const QString &sHtml)

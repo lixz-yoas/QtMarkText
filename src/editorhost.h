@@ -182,6 +182,14 @@ public:
     /// 保证加载间隙/未覆盖区域与当前主题的编辑器背景一致（消除闪白与色差边）。
     void setViewBackground(const QColor &color);
 
+    /// 打开 WebView2 内核自带的开发者工具窗口（菜单「显示开发者工具 / Ctrl+Alt+I」）。
+    /// 对应 Electron 的 webContents.toggleDevTools()。返回 false 表示宿主未就绪。
+    bool openDevTools();
+
+    /// 重新加载渲染层（菜单「重新加载窗口 / Ctrl+F5」）。
+    /// 对应 Electron 的 window-reload-by-id。返回 false 表示宿主未就绪。
+    bool reload();
+
 signals:
     /// WebView2 内按下了 Alt（对齐 MarkText「按 Alt 呼出菜单栏」）
     void altKeyPressed();

@@ -5,6 +5,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QDesktopServices>
+#include <QJsonObject>
 #include <QMenu>
 #include <QMenuBar>
 #include <QUrl>
@@ -209,6 +210,236 @@ void MarkTextMenu::setVisibleById(const QString &sId, bool bVisible)
 }
 
 //=====================================================================
+//  渲染层状态回传 → 菜单勾选 / 可用态
+//  逐条对照主进程 updateFormatMenu / setCheckedMenuItem /
+//  updateSelectionMenus / updateLineEndingMenu 的语义。
+//=====================================================================
+namespace {
+
+/// 段落菜单项 id → 官方 MENU_ID_MAP 的 affiliation key
+const QHash<QString, QString> &paragraphAffiliationMap()
+{
+    static const QHash<QString, QString> map = {
+        { QStringLiteral("heading1MenuItem"),       QStringLiteral("h1") },
+        { QStringLiteral("heading2MenuItem"),       QStringLiteral("h2") },
+        { QStringLiteral("heading3MenuItem"),       QStringLiteral("h3") },
+        { QStringLiteral("heading4MenuItem"),       QStringLiteral("h4") },
+        { QStringLiteral("heading5MenuItem"),       QStringLiteral("h5") },
+        { QStringLiteral("heading6MenuItem"),       QStringLiteral("h6") },
+        { QStringLiteral("tableMenuItem"),          QStringLiteral("figure") },
+        { QStringLiteral("codeFencesMenuItem"),     QStringLiteral("pre") },
+        { QStringLiteral("htmlBlockMenuItem"),      QStringLiteral("html") },
+        { QStringLiteral("mathBlockMenuItem"),      QStringLiteral("multiplemath") },
+        { QStringLiteral("quoteBlockMenuItem"),     QStringLiteral("blockquote") },
+        { QStringLiteral("orderListMenuItem"),      QStringLiteral("ol") },
+        { QStringLiteral("bulletListMenuItem"),     QStringLiteral("ul") },
+        { QStringLiteral("paragraphMenuItem"),      QStringLiteral("p") },
+        { QStringLiteral("horizontalLineMenuItem"), QStringLiteral("hr") },
+        { QStringLiteral("frontMatterMenuItem"),    QStringLiteral("frontmatter") }
+    };
+    return map;
+}
+
+/// 格式菜单项 id → 官方 MENU_ID_FORMAT_MAP 的格式 type
+const QHash<QString, QString> &formatTypeMap()
+{
+    static const QHash<QString, QString> map = {
+        { QStringLiteral("strongMenuItem"),     QStringLiteral("strong") },
+        { QStringLiteral("emphasisMenuItem"),   QStringLiteral("em") },
+        { QStringLiteral("inlineCodeMenuItem"), QStringLiteral("inline_code") },
+        { QStringLiteral("strikeMenuItem"),     QStringLiteral("del") },
+        { QStringLiteral("hyperlinkMenuItem"),  QStringLiteral("link") },
+        { QStringLiteral("imageMenuItem"),      QStringLiteral("image") },
+        { QStringLiteral("inlineMathMenuItem"), QStringLiteral("inline_math") }
+    };
+    return map;
+}
+
+/// 官方 DISABLE_LABELS：多行选区时这些项要置灰
+const QStringList &disableLabels()
+{
+    static const QStringList list = {
+        QStringLiteral("heading1MenuItem"), QStringLiteral("heading2MenuItem"),
+        QStringLiteral("heading3MenuItem"), QStringLiteral("heading4MenuItem"),
+        QStringLiteral("heading5MenuItem"), QStringLiteral("heading6MenuItem"),
+        QStringLiteral("upgradeHeadingMenuItem"), QStringLiteral("degradeHeadingMenuItem"),
+        QStringLiteral("tableMenuItem"),
+        QStringLiteral("hyperlinkMenuItem"), QStringLiteral("imageMenuItem")
+    };
+    return list;
+}
+
+/// 段落菜单的全部可勾选项（官方是对 submenu.items 遍历，这里按 id 列举）
+const QStringList &paragraphCheckableIds()
+{
+    static const QStringList list = {
+        QStringLiteral("heading1MenuItem"), QStringLiteral("heading2MenuItem"),
+        QStringLiteral("heading3MenuItem"), QStringLiteral("heading4MenuItem"),
+        QStringLiteral("heading5MenuItem"), QStringLiteral("heading6MenuItem"),
+        QStringLiteral("upgradeHeadingMenuItem"), QStringLiteral("degradeHeadingMenuItem"),
+        QStringLiteral("tableMenuItem"), QStringLiteral("codeFencesMenuItem"),
+        QStringLiteral("quoteBlockMenuItem"), QStringLiteral("mathBlockMenuItem"),
+        QStringLiteral("htmlBlockMenuItem"), QStringLiteral("orderListMenuItem"),
+        QStringLiteral("bulletListMenuItem"), QStringLiteral("taskListMenuItem"),
+        QStringLiteral("looseListItemMenuItem"), QStringLiteral("paragraphMenuItem"),
+        QStringLiteral("horizontalLineMenuItem"), QStringLiteral("frontMatterMenuItem")
+    };
+    return list;
+}
+
+/// 格式菜单的全部项（用于整体置灰 / 复位）
+const QStringList &formatAllIds()
+{
+    static const QStringList list = {
+        QStringLiteral("strongMenuItem"), QStringLiteral("emphasisMenuItem"),
+        QStringLiteral("underlineMenuItem"), QStringLiteral("superscriptMenuItem"),
+        QStringLiteral("subscriptMenuItem"), QStringLiteral("highlightMenuItem"),
+        QStringLiteral("inlineCodeMenuItem"), QStringLiteral("inlineMathMenuItem"),
+        QStringLiteral("strikeMenuItem"), QStringLiteral("hyperlinkMenuItem"),
+        QStringLiteral("imageMenuItem"), QStringLiteral("clearFormatMenuItem")
+    };
+    return list;
+}
+
+} // namespace
+
+void MarkTextMenu::applyFormatState(const QJsonObject &objFormats)
+{
+    // 官方 updateFormatMenu：先全部取消勾选，再按映射表点亮
+    const QHash<QString, QString> &mapType = formatTypeMap();
+    for (const QString &sId : formatAllIds()) {
+        QAction *pAction = actionById(sId);
+        if (pAction == nullptr) {
+            continue;
+        }
+        const QString sType = mapType.value(sId);
+        pAction->setChecked(!sType.isEmpty() && objFormats.value(sType).toBool());
+    }
+}
+
+void MarkTextMenu::applyLineEndingState(const QString &sLineEnding)
+{
+    const QString sNormalized = sLineEnding.trimmed().toLower();
+    setCheckedById(QStringLiteral("crlfLineEndingMenuEntry"), (sNormalized == QLatin1String("crlf")));
+    setCheckedById(QStringLiteral("lfLineEndingMenuEntry"),   (sNormalized == QLatin1String("lf")));
+}
+
+void MarkTextMenu::applySelectionState(const QJsonObject &objState)
+{
+    const QJsonObject objAffiliation = objState.value(QStringLiteral("affiliation")).toObject();
+    const bool bIsTable    = objState.value(QStringLiteral("isTable")).toBool();
+    const bool bIsLoose    = objState.value(QStringLiteral("isLooseListItem")).toBool();
+    const bool bIsTaskList = objState.value(QStringLiteral("isTaskList")).toBool();
+    const bool bDisabled   = objState.value(QStringLiteral("isDisabled")).toBool();
+    const bool bMultiline  = objState.value(QStringLiteral("isMultiline")).toBool();
+    const bool bCodeFences = objState.value(QStringLiteral("isCodeFences")).toBool();
+    const bool bCodeContent= objState.value(QStringLiteral("isCodeContent")).toBool();
+
+    // ---- 1. 段落菜单勾选（官方 setCheckedMenuItem）----
+    const QHash<QString, QString> &mapAff = paragraphAffiliationMap();
+    QStringList listAffKeys;
+    for (auto it = objAffiliation.constBegin(); it != objAffiliation.constEnd(); ++it) {
+        if (it.value().toBool()) {
+            listAffKeys.append(it.key());
+        }
+    }
+
+    for (const QString &sId : paragraphCheckableIds()) {
+        QAction *pAction = actionById(sId);
+        if (pAction == nullptr) {
+            continue;
+        }
+        if (sId == QLatin1String("looseListItemMenuItem")) {
+            pAction->setChecked(bIsLoose);
+            continue;
+        }
+        bool bChecked = false;
+        for (const QString &sAff : listAffKeys) {
+            // 任务列表与无序列表同属 "ul"，官方靠 isTaskList 区分归属
+            if (sAff == QLatin1String("ul") && bIsTaskList) {
+                if (sId == QLatin1String("taskListMenuItem")) {
+                    bChecked = true;
+                    break;
+                }
+                continue;
+            }
+            if (bIsTable && sId == QLatin1String("tableMenuItem")) {
+                bChecked = true;
+                break;
+            }
+            // 代码块内部（*code / *multiplemath 等）点亮"代码围栏"
+            if (sId == QLatin1String("codeFencesMenuItem") && sAff.endsWith(QLatin1String("code"))) {
+                bChecked = true;
+                break;
+            }
+            if (sAff == mapAff.value(sId)) {
+                bChecked = true;
+                break;
+            }
+        }
+        pAction->setChecked(bChecked);
+    }
+
+    // ---- 2. 可用态（官方 updateSelectionMenus）----
+    // 官方顺序：格式组全部启用 → 段落组按 isDisabled 开关 →
+    // 再按 isCodeFences / isMultiline / 无列表 三条规则逐条覆盖。
+    for (const QString &sId : formatAllIds()) {
+        setEnabledById(sId, true);
+    }
+    const QStringList &listParagraphIds = paragraphCheckableIds();
+    for (const QString &sId : listParagraphIds) {
+        setEnabledById(sId, !bDisabled);
+    }
+    if (bDisabled) {
+        return;
+    }
+
+    if (bCodeFences) {
+        // 已在代码块内：段落组整体置灰
+        for (const QString &sId : listParagraphIds) {
+            setEnabledById(sId, false);
+        }
+        if (bCodeContent) {
+            for (const QString &sId : formatAllIds()) {
+                setEnabledById(sId, false);
+            }
+            for (const QString &sAff : listAffKeys) {
+                if (sAff.endsWith(QLatin1String("code"))) {
+                    setEnabledById(QStringLiteral("codeFencesMenuItem"), true);
+                    break;
+                }
+            }
+        }
+        return;
+    }
+
+    if (bMultiline) {
+        for (const QString &sId : formatAllIds()) {
+            if (disableLabels().contains(sId)) {
+                setEnabledById(sId, false);
+            }
+        }
+        for (const QString &sId : disableLabels()) {
+            setEnabledById(sId, false);
+        }
+    }
+
+    // 既不在列表里：标题类与"插入列表"类项置灰
+    const bool bInList = objAffiliation.value(QStringLiteral("ul")).toBool()
+                      || objAffiliation.value(QStringLiteral("ol")).toBool();
+    if (!bInList) {
+        static const QStringList listOff = {
+            QStringLiteral("looseListItemMenuItem"),
+            QStringLiteral("upgradeHeadingMenuItem"),
+            QStringLiteral("degradeHeadingMenuItem")
+        };
+        for (const QString &sId : listOff) {
+            setEnabledById(sId, false);
+        }
+    }
+}
+
+//=====================================================================
 //  文件菜单
 //  对照：templates/file.ts
 //=====================================================================
@@ -329,10 +560,10 @@ void MarkTextMenu::buildEditMenu(QMenuBar *pBar)
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("findInFolderMenuItem"), QStringLiteral("在文件夹中查找"), QStringLiteral("Ctrl+Shift+F")); // edit.find-in-folder
-    addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("screenshot"), QStringLiteral("截图"));                                            // edit.screenshot（macOS 专有，无键位）
-    addSeparator(pMenu);
+    // 「截图」按官方口径不注册：templates/edit.ts 标了 visible: isOsx$1，
+    // 它走的是 Electron desktopCapturer（macOS 专有）。本工程此前无条件建出来，
+    // 点了只会掉进"尚未实现"兜底，与官方 Windows 菜单不一致。
 
     QMenu *pLineEnding = pMenu->addMenu(QStringLiteral("行结束符"));  // menu.edit.lineEnding
     pLineEnding->setObjectName(QStringLiteral("lineEndingMenu"));
@@ -354,17 +585,23 @@ void MarkTextMenu::buildParagraphMenu(QMenuBar *pBar)
     QMenu *pMenu = pBar->addMenu(QStringLiteral("段落"));            // menu.paragraph.title
     pMenu->setObjectName(QStringLiteral("paragraphMenuEntry"));
 
-    // 标题 1~5：MarkText 在 Windows 上不给默认键位（Ctrl+Alt 是 AltGr 别名）。
-    // 只保留 1~5：六级标题在 Markdown 里几乎不用，菜单里留着只是噪音。
+    // 标题 1~6：MarkText 在 Windows 上不给默认键位（Ctrl+Alt 是 AltGr 别名）。
+    // 六级标题是官方 templates/paragraph.ts 里真实存在的一项
+    // （bridge 路由表也早备好了 "heading 6"），此前菜单只建到 5，
+    // 于是 Markdown 的 h6 根本点不出来 —— 与官方菜单不一致。
     addCommand(pMenu, QStringLiteral("heading1MenuItem"), QStringLiteral("标题 1"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading2MenuItem"), QStringLiteral("标题 2"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading3MenuItem"), QStringLiteral("标题 3"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading4MenuItem"), QStringLiteral("标题 4"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading5MenuItem"), QStringLiteral("标题 5"), QString(), true);
+    addCommand(pMenu, QStringLiteral("heading6MenuItem"), QStringLiteral("标题 6"), QString(), true);
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("upgradeHeadingMenuItem"), QStringLiteral("提升标题级别"), QStringLiteral("Ctrl+Plus"), true);  // paragraph.upgrade-heading
-    addCommand(pMenu, QStringLiteral("degradeHeadingMenuItem"), QStringLiteral("降低标题级别"), QStringLiteral("Ctrl+-"), true);     // paragraph.degrade-heading
+    // 提升/降低标题：官方 templates/paragraph.ts 里这两项**没有** type:"checkbox"
+    // （它们是一次性动作，不是状态）。此前误设为可勾选，点一下就打勾、
+    // 再点又自己取消 —— 与官方菜单表现不符，这里改回普通命令项。
+    addCommand(pMenu, QStringLiteral("upgradeHeadingMenuItem"), QStringLiteral("提升标题级别"), QStringLiteral("Ctrl+Plus"), false);  // paragraph.upgrade-heading
+    addCommand(pMenu, QStringLiteral("degradeHeadingMenuItem"), QStringLiteral("降低标题级别"), QStringLiteral("Ctrl+-"), false);     // paragraph.degrade-heading
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("tableMenuItem"),      QStringLiteral("表格"),     QStringLiteral("Ctrl+Shift+T"), true);  // paragraph.table

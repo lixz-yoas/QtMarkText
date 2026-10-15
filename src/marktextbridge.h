@@ -74,6 +74,14 @@ public:
     /// 菜单项 id → 渲染层命令；返回 true 表示已转交渲染层
     bool routeMenuCommand(const QString &sMenuId);
 
+    /// 缩放编辑区（对照官方 main/menu/actions/window.ts 的 zoomIn / zoomOut）。
+    ///
+    /// 官方做法是读当前 zoomFactor ±0.125 后发 `mt::window-zoom <数字>`，
+    /// 渲染层 LISTEN_WINDOW_ZOOM 收到即 EDIT_ZOOM()：
+    /// 既改页面 zoom，又把新值写回 preference.zoom。
+    /// bZoomIn=true 放大，false 缩小。返回实际生效的缩放值（未就绪时返回 0）。
+    double zoomBy(bool bZoomIn);
+
     /// 把「菜单项 -> 快捷键」灌进来（供渲染层命令面板显示）
     void setKeybindings(const QList<QPair<QString, QString> > &listKeybindings);
 
@@ -145,6 +153,22 @@ signals:
     /// —— 渲染层是自绘布局，"切换侧边栏/标签栏"由它自己改，外壳据此同步菜单勾选。
     void layoutChanged(bool bShowSideBar, bool bShowTabBar);
 
+    //-----------------------------------------------------------------
+    //  菜单状态回传（对齐 Electron 主进程 UpdateApplicationMenu）
+    //
+    //  官方在渲染层"选区/格式变化"时把菜单的勾选与可用态算好发回来，
+    //  主进程据此刷新 native menu。缺了这一段，Qt 菜单就会一直停在
+    //  "什么都没选中"的状态：光标已经在一段粗体里，菜单里的「粗体」
+    //  仍然没打勾。
+    //-----------------------------------------------------------------
+    /// 光标/选区状态（mt::editor-selection-changed）。
+    /// 载荷即官方 createApplicationMenuState(changes) 的原样结构。
+    void selectionStateChanged(const QJsonObject &objState);
+    /// 行内格式状态（mt::update-format-menu）：{"<格式type>": true, ...}
+    void formatMenuStateChanged(const QJsonObject &objFormats);
+    /// 行结束符状态（mt::update-line-ending-menu）："crlf" / "lf"
+    void lineEndingMenuStateChanged(const QString &sLineEnding);
+
 private:
     void registerInvokeHandlers();
     void registerSendHandlers();
@@ -185,6 +209,10 @@ private:
     bool m_bBridgeReady;
     bool m_bRendererReady;
     bool m_bBootstrapSent;
+
+    /// bootstrap-editor 里下发的 addBlankTab 值。
+    /// 为 false（有会话待恢复）而会话又没恢复成时，需要补开空白编辑页。
+    bool m_bBlankTabByBootstrap = true;
 
     /// 渲染层就绪前请求打开的文件（命令行参数/拖放常见），
     /// 等 mt::window-initialized 后依序补发

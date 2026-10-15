@@ -37,10 +37,12 @@
 #include <QPdfWriter>
 #include <QPixmap>
 #include <QPointer>
+#include <QProcess>
 #include <QResizeEvent>
 #include <QScreen>
 #include <QSettings>
 #include <QShowEvent>
+#include <QStandardPaths>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
@@ -1292,6 +1294,22 @@ IEditorEngine *MainWindow::addEditorTab()
                         onMenuCommand(sMenuId);
                     });
                 });
+        // 渲染层上报「光标/选区在什么格式里」→ 刷新段落与格式菜单的勾选、置灰。
+        // 这几条以前都落进桥接层的"未处理"兜底，于是菜单永远停在初始态：
+        // 光标明明在粗体里，菜单「粗体」也不打勾；行结束符也永远不选中当前值。
+        connect(pEngine->bridge(), &MarkTextBridge::selectionStateChanged, this,
+                [this](const QJsonObject &objState) {
+                    m_pMenu->applySelectionState(objState);
+                });
+        connect(pEngine->bridge(), &MarkTextBridge::formatMenuStateChanged, this,
+                [this](const QJsonObject &objFormats) {
+                    m_pMenu->applyFormatState(objFormats);
+                });
+        connect(pEngine->bridge(), &MarkTextBridge::lineEndingMenuStateChanged, this,
+                [this](const QString &sLineEnding) {
+                    qInfo("[菜单] 行结束符状态：%s", qPrintable(sLineEnding));
+                    m_pMenu->applyLineEndingState(sLineEnding);
+                });
         // 反方向：渲染层自己改了主题（命令面板 window.change-theme-*）时，
         // 外壳的菜单栏/窗口配色要跟着换，否则会出现"编辑区变了、菜单栏没变"。
         connect(pEngine->bridge(), &MarkTextBridge::preferenceChangedByRenderer,
@@ -1648,9 +1666,82 @@ void MainWindow::renameCurrentFile()
 
 void MainWindow::importIntoCurrent()
 {
-    // MarkText 的「导入」支持 docx/odt/epub 等，依赖渲染层与 Electron 侧的转换器，
-    // 外壳本轮只把入口接出来。
-    showPendingMessage(QStringLiteral("导入"));
+    // 官方 actions/file.ts 的 importFile：先查 pandoc，缺了就 noticePandocNotFound
+    // （弹"请安装 pandoc"），有才 openDialog + pandoc -s <in> -t markdown 转出 Markdown。
+    // 本工程此前只弹一句"由渲染层接管、尚未实现"，等于把这个功能整条关掉了。
+    // 现在按官方口径补齐：能转就真转，不能转就给出可执行的安装指引。
+    if (pandocPath().isEmpty()) {
+        QMessageBox::information(
+            this, QStringLiteral("导入"),
+            QStringLiteral("<b>需要先安装 Pandoc</b><br><br>"
+                           "「导入」用于把 docx / odt / epub / html 等文档转成 Markdown，"
+                           "这一步由 Pandoc 完成。<br><br>"
+                           "安装后重新打开本程序即可使用。<br>"
+                           "下载地址：https://pandoc.org/downloads.html"));
+        return;
+    }
+
+    const QString sPath = QFileDialog::getOpenFileName(
+        this, QStringLiteral("选择要导入的文件"), dialogStartDir(),
+        QStringLiteral("支持的文档 (*.docx *.odt *.epub *.html *.htm *.latex *.tex *.ltx *.rst *.rest *.org *.wiki *.dokuwiki *.textile *.opml);;所有文件 (*.*)"));
+    if (sPath.isEmpty()) {
+        return;
+    }
+
+    // pandoc -s <in> -t markdown，stdout 即转换结果
+    QProcess process;
+    process.start(pandocPath(), QStringList()
+                  << QStringLiteral("-s") << sPath << QStringLiteral("-t") << QStringLiteral("markdown"));
+    if (!process.waitForStarted(8000)) {
+        QMessageBox::warning(this, QStringLiteral("导入"),
+                             QStringLiteral("无法启动 Pandoc：\n%1").arg(pandocPath()));
+        return;
+    }
+    if (!process.waitForFinished(60000)) {
+        process.kill();
+        QMessageBox::warning(this, QStringLiteral("导入"),
+                             QStringLiteral("Pandoc 转换超时（60 秒）。"));
+        return;
+    }
+    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        QMessageBox::warning(this, QStringLiteral("导入"),
+                             QStringLiteral("Pandoc 转换失败：\n%1")
+                                 .arg(QString::fromLocal8Bit(process.readAllStandardError()).trimmed()));
+        return;
+    }
+
+    const QString sMarkdown = QString::fromUtf8(process.readAllStandardOutput());
+    if (sMarkdown.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("导入"),
+                                 QStringLiteral("转换结果为空，未导入任何内容。"));
+        return;
+    }
+
+    // 转出来的 Markdown 交给渲染层开一个新标签承载
+    IEditorEngine *pEngine = currentEngine();
+    if (pEngine == nullptr) {
+        pEngine = addEditorTab();
+    }
+    if (pEngine->bridge() != nullptr) {
+        pEngine->bridge()->emitToRenderer(QStringLiteral("mt::new-untitled-tab"),
+                                          QJsonArray{ QJsonObject{
+                                              { QStringLiteral("markdown"), sMarkdown },
+                                              { QStringLiteral("selected"), true } } });
+        statusBar()->showMessage(QStringLiteral("已导入：%1").arg(QFileInfo(sPath).fileName()), 5000);
+    } else {
+        pEngine->setMarkdownText(sMarkdown);
+        statusBar()->showMessage(QStringLiteral("已导入到新标签：%1").arg(QFileInfo(sPath).fileName()), 5000);
+    }
+}
+
+QString MainWindow::pandocPath() const
+{
+    // 口径对齐官方 getCommand()：先看 MARKTEXT_PANDOC 环境变量，再退回 PATH 里的 pandoc。
+    const QString sEnv = qEnvironmentVariable("MARKTEXT_PANDOC");
+    if (!sEnv.isEmpty() && QFileInfo::exists(sEnv)) {
+        return sEnv;
+    }
+    return QStandardPaths::findExecutable(QStringLiteral("pandoc"));
 }
 
 //=====================================================================
@@ -1937,16 +2028,27 @@ void MainWindow::onMenuCommand(const QString &sId)
         return;
     }
     if (sId == QLatin1String("zoomInMenuItem") || sId == QLatin1String("zoomOutMenuItem")) {
-        // MarkText 的缩放作用于渲染层；外壳侧改的是渲染层下发的 preference.zoom
-        const double dStep = (sId == QLatin1String("zoomInMenuItem")) ? 0.1 : -0.1;
-        double dZoom = m_pStore->value(QStringLiteral("zoom")).toDouble() + dStep;
-        dZoom = qBound(0.5, dZoom, 2.0);
-        m_pStore->setValue(QStringLiteral("zoom"), dZoom);
+        // MarkText 的缩放作用于渲染层，必须经 bridge 下发 mt::window-zoom，
+        // 渲染层 EDIT_ZOOM 才会真正改页面 zoom（并把新值写回 preference.zoom）。
+        // 此前这里只改了本地偏好，界面完全不动 —— 菜单点了跟没点一样。
+        const bool bZoomIn = (sId == QLatin1String("zoomInMenuItem"));
         IEditorEngine *pEngine = currentEngine();
-        if (pEngine != nullptr) {
-            pEngine->setPreference(QStringLiteral("zoom"), dZoom);
+        MarkTextBridge *pBridge = (pEngine != nullptr) ? pEngine->bridge() : nullptr;
+        double dZoom = 0.0;
+        if (pBridge != nullptr) {
+            dZoom = pBridge->zoomBy(bZoomIn);
+        } else {
+            dZoom = m_pStore->value(QStringLiteral("zoom")).toDouble();
+            dZoom = qBound(0.5, dZoom + (bZoomIn ? 0.125 : -0.125), 2.0);
+            m_pStore->setValue(QStringLiteral("zoom"), dZoom);
         }
-        statusBar()->showMessage(QStringLiteral("缩放：%1").arg(dZoom, 0, 'f', 1), 2000);
+        if (dZoom > 0.0) {
+            statusBar()->showMessage(
+                QStringLiteral("缩放：%1").arg(dZoom * 100.0, 0, 'f', 0) + QStringLiteral("%"),
+                2000);
+        } else {
+            statusBar()->showMessage(QStringLiteral("缩放：渲染层尚未就绪"), 2000);
+        }
         return;
     }
 
@@ -1970,6 +2072,27 @@ void MainWindow::onMenuCommand(const QString &sId)
         } else {
             m_pTabWidget->tabBar()->setVisible(bVisible);
             m_pStore->setValue(QStringLiteral("tabBarVisibility"), bVisible);
+        }
+        return;
+    }
+
+    // ---------------- 视图：开发者工具 / 重新加载窗口 ----------------
+    // 这两项 Electron 侧是 webContents.toggleDevTools() 与整窗重载，
+    // 都不经过渲染层 —— WebView2 直接提供对应能力，走引擎即可。
+    if (sId == QLatin1String("showDeveloperToolsMenuItem")
+            || sId == QLatin1String("reloadWindowMenuItem")) {
+        IEditorEngine *pEngine = currentEngine();
+        WebView2EditorEngine *pWv2 = qobject_cast<WebView2EditorEngine *>(pEngine);
+        const bool bDevTools = (sId == QLatin1String("showDeveloperToolsMenuItem"));
+        bool bOk = false;
+        if (pWv2 != nullptr) {
+            bOk = bDevTools ? pWv2->openDevTools() : pWv2->reload();
+        }
+        if (!bOk) {
+            statusBar()->showMessage(
+                bDevTools ? QStringLiteral("开发者工具不可用：渲染层尚未就绪")
+                          : QStringLiteral("重新加载不可用：渲染层尚未就绪"),
+                3000);
         }
         return;
     }

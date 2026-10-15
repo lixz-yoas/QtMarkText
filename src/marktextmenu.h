@@ -2,6 +2,7 @@
 #define MARKTEXTMENU_H
 
 #include <QHash>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QList>
 #include <QObject>
@@ -52,6 +53,17 @@ public:
     void setCheckedById(const QString &sId, bool bChecked);
     void setEnabledById(const QString &sId, bool bEnabled);
     void setVisibleById(const QString &sId, bool bVisible);
+
+    // ---- 渲染层状态回传驱动的菜单刷新（对照主进程 UpdateApplicationMenu）----
+    /// 应用光标/选区状态（载荷即官方 createApplicationMenuState 的结构）。
+    /// 负责：段落菜单勾选 + 段落/格式两组的可用态。
+    /// objState 的键：affiliation / isTable / isLooseListItem / isTaskList /
+    ///                isDisabled / isMultiline / isCodeFences / isCodeContent
+    void applySelectionState(const QJsonObject &objState);
+    /// 应用行内格式状态：{"<格式 type>": true, ...}
+    void applyFormatState(const QJsonObject &objFormats);
+    /// 应用行结束符状态："crlf" / "lf"
+    void applyLineEndingState(const QString &sLineEnding);
 
     /// 重建「打开最近」子菜单（MarkText 最多保留 12 条）
     void setRecentFiles(const QStringList &listFiles);

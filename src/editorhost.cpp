@@ -448,6 +448,33 @@ void WebView2EditorEngine::setViewBackground(const QColor &color)
     }
 }
 
+bool WebView2EditorEngine::openDevTools()
+{
+    if (m_pHost == nullptr) {
+        return false;
+    }
+    // 与剪贴板同理：此刻多半还在 WebView2 的按键回调里，
+    // 直接开窗会挡在回调返回前面，推迟一拍更稳。
+    WebView2Host *pHost = m_pHost;
+    QTimer::singleShot(0, pHost, [pHost]() {
+        pHost->openDevTools();
+    });
+    return true;
+}
+
+bool WebView2EditorEngine::reload()
+{
+    if (m_pHost == nullptr) {
+        return false;
+    }
+    WebView2Host *pHost = m_pHost;
+    // 重载要重新走"文档创建"钩子，延后一拍避免在当前按键回调里嵌套导航
+    QTimer::singleShot(0, pHost, [pHost]() {
+        pHost->reload();
+    });
+    return true;
+}
+
 bool WebView2EditorEngine::eventFilter(QObject *pWatched, QEvent *pEvent)
 {
     if (pWatched == m_pView) {

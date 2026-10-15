@@ -120,6 +120,9 @@ private:
     void moveCurrentFile();
     void renameCurrentFile();
     void importIntoCurrent();
+    /// 定位 Pandoc 可执行文件（口径对齐官方 getCommand()：
+    /// 先看 MARKTEXT_PANDOC 环境变量，再退回 PATH）；找不到返回空串。
+    QString pandocPath() const;
 
     // ---- 最近打开（MarkText 最多保留 12 条）----
     void loadRecentFiles();

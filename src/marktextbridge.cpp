@@ -301,7 +301,24 @@ QString MarkTextBridge::startUrl() const
                            prefBool("followSystemTheme", true),
                            prefStr("lightModeTheme", "light"),
                            prefStr("darkModeTheme", "dark")));
-    query.addQueryItem(QStringLiteral("tbs"), prefStr("titleBarStyle", "custom"));
+    // ---- tbs（titleBarStyle）：固定 native，不读偏好 ----
+    //
+    // 渲染层在 titleBarStyle === "custom" 时会在自己的标题栏右侧画一套
+    // 窗口按钮（frameless-titlebar-close / -toggle / -minimize，
+    // 见 index-B-PE276Q.js 的 showCustomTitleBar 与三个分支）。
+    // 而外壳在菜单栏右上角已经有WindowControlBar 那套了
+    // （nativeEvent 去掉了系统标题栏，见 MainWindow::nativeEvent）——
+    // 两者同时存在就是"两套窗口按钮"。
+    //
+    // 故这里一律下发 "native"：渲染层不再画自绘按钮、也不给标题栏加
+    // frameless 类（那会让标签栏右侧留出一块空白）。
+    // 拖动窗口改由外壳菜单栏承担（MainWindow::isMenuBarCaptionArea +
+    // eventFilter 已实现拖动与双击最大化），功能不丢。
+    //
+    // 之所以不读偏好：偏好里的 titleBarStyle 是官方为 Electron 准备的
+    // （原生标题栏 or 自绘），在 Qt 外壳下"原生标题栏"不存在，
+    // 两个取值都会导致按钮缺失或重复，没有第三种有意义的状态。
+    query.addQueryItem(QStringLiteral("tbs"), QStringLiteral("native"));
 
     url.setQuery(query);
     return url.toString(QUrl::FullyEncoded);
@@ -354,6 +371,12 @@ QJsonObject MarkTextBridge::preferenceObjectForRenderer() const
                        m_pStore->boolValue(QStringLiteral("followSystemTheme")),
                        m_pStore->stringValue(QStringLiteral("lightModeTheme")),
                        m_pStore->stringValue(QStringLiteral("darkModeTheme"))));
+
+        // titleBarStyle 同理固定native：渲染层 ASK_FOR_USER_PREFERENCE 会把这份
+        // 全量偏好灌回 store，若这里透出 ini 里的历史值（如 custom），
+        // 就会把 URL 参数刚设好的 native 覆盖回去、按钮又冒出来。
+        // 详见 startUrl() 里 tbs 参数处的说明。
+        obj.insert(QStringLiteral("titleBarStyle"), QStringLiteral("native"));
     }
     return obj;
 }
@@ -1165,12 +1188,23 @@ void MarkTextBridge::registerSendHandlers()
                               //  故推到事件循环下一拍，让 preload 剩下的 init 链先跑完。
                               //  （emit 是 postMessage 异步投递，这一拍足够。）
                               QTimer::singleShot(0, this, [this]() {
-                                  if (restoreBufferedState()) {
+                                  const bool bRestored = restoreBufferedState();
+                                  if (bRestored) {
                                       emit sessionRestored();
                                   }
                                   // 命令行文件是用户的显式意图，排在会话恢复之后打开
                                   const QStringList listFiles = m_listPendingFiles;
                                   m_listPendingFiles.clear();
+                                  // 启动时没让渲染层开空白页（addBlankTab=false，见
+                                  // sendBootstrapEditor），而会话又没恢复成（快照里的
+                                  // 文件已被删除等）且也没有文件要开：渲染层会停在欢迎
+                                  // 页，这里补开一个空白编辑页兜底。
+                                  if (!bRestored && listFiles.isEmpty() && !m_bBlankTabByBootstrap) {
+                                      emitToRenderer(QStringLiteral("mt::new-untitled-tab"),
+                                                     QJsonArray{ true, QString() });
+                                      emit logMessage(QStringLiteral("info"),
+                                                      QStringLiteral("[会话] 会话未恢复成，补开空白编辑页"));
+                                  }
                                   for (const QString &sFile : listFiles) {
                                       emit logMessage(QStringLiteral("info"),
                                                       QStringLiteral("补发待打开文件：%1").arg(sFile));
@@ -1300,6 +1334,28 @@ void MarkTextBridge::registerSendHandlers()
                            obj.value(QStringLiteral("showTabBar")).toBool());
     });
 
+    // ---- 菜单勾选 / 可用态回传（对照主进程 _listenForIpcMain 的四个通道）----
+    // 这几条以前全落进下面的"未处理 send"兜底，结果是菜单永远不反映
+    // 光标处真实状态：段落/格式打不了勾，行结束符永远不选中。
+    // 载荷的第 0 项都是 windowId，第 1 项才是状态本身。
+    m_hashSend.insert(QStringLiteral("mt::editor-selection-changed"),
+                      [this](const QJsonArray &arrArgs) {
+                          emit selectionStateChanged(arrArgs.at(1).toObject());
+                      });
+    m_hashSend.insert(QStringLiteral("mt::update-format-menu"), [this](const QJsonArray &arrArgs) {
+        emit formatMenuStateChanged(arrArgs.at(1).toObject());
+    });
+    m_hashSend.insert(QStringLiteral("mt::update-line-ending-menu"),
+                      [this](const QJsonArray &arrArgs) {
+                          emit lineEndingMenuStateChanged(arrArgs.at(1).toString());
+                      });
+    // 侧边栏勾选（layoutChanged 已覆盖布局，这里同步的是 sideBarMenuItem 本身）
+    m_hashSend.insert(QStringLiteral("mt::update-sidebar-menu"), [this](const QJsonArray &arrArgs) {
+        const bool bShow = arrArgs.at(1).toBool();
+        m_pStore->setValue(QStringLiteral("sideBarVisibility"), bShow);
+        emit layoutChanged(bShow, m_pStore->boolValue(QStringLiteral("tabBarVisibility")));
+    });
+
     // ---- 保存落盘（渲染层 FILE_SAVE / FILE_SAVE_AS 的回执）----
     // 渲染层把自己持有的 markdown 发回来，这里落盘并回报结果。
     m_hashSend.insert(QStringLiteral("mt::response-file-save"),
@@ -1343,7 +1399,7 @@ void MarkTextBridge::registerSendHandlers()
         "mt::print-service-clearup", "mt::pandoc-not-exists", "mt::invalidate-image-cache",
         "mt::screenshot-captured", "mt::menu::closed", "mt::menu::popup",
         "mt::menu::popup-application", "mt::window::drop", "mt::window-active-status",
-        "mt::editor-selection-changed", "mt::editor-format-action", "mt::editor-paragraph-action",
+        "mt::editor-format-action", "mt::editor-paragraph-action",
         "mt::editor-edit-action", "mt::editor-ask-file-save", "mt::editor-ask-file-save-as",
         "mt::editor-close-tab", "mt::editor-move-file", "mt::editor-rename-file",
         "mt::spellchecker-set-enabled", "mt::spellchecker-switch-language",
@@ -1351,8 +1407,11 @@ void MarkTextBridge::registerSendHandlers()
         "mt::spellchecker-get-available-dictionaries", "mt::keybinding-debug-dump-keyboard-info",
         "mt::ask-for-open-project-in-sidebar", "mt::ask-for-modify-image-folder-path",
         "mt::ask-for-image-path", "mt::ask-for-image-auto-path", "mt::update-file",
-        "mt::update-sidebar-menu", "mt::update-object-tree", "mt::update-format-menu",
-        "mt::update-line-ending-menu", "mt::set-file-encoding", "mt::set-final-newline",
+        "mt::update-object-tree",
+        // 以下四条已在上面注册了真实处理（菜单状态回传），从兜底列表移除：
+        // "mt::update-sidebar-menu", "mt::update-format-menu", "mt::update-line-ending-menu"
+        // "mt::editor-selection-changed"
+        "mt::set-file-encoding", "mt::set-final-newline",
         "mt::tab-saved", "mt::tab-save-failure", "mt::export-success", "mt::response-export",
         "mt::response-print", "mt::response-file-save", "mt::response-file-save-as",
         "mt::response-file-move-to", "mt::rename", "mt::set-pathname", "mt::set-user-data",
@@ -1514,7 +1573,18 @@ void MarkTextBridge::sendBootstrapEditor()
             && m_pStore->boolValue(QStringLiteral("sourceCodeModeEnabled"));
 
     QJsonObject objConfig;
-    objConfig.insert(QStringLiteral("addBlankTab"), true);
+    // ---- addBlankTab 不能恒为 true ----
+    //  原版口径（main/windows/editor.ts:79）：
+    //    const addBlankTab = !bufferStoreInfo && !rootDirectory && ...
+    //  即"有会话要恢复时不开空白页"。若恒为 true，渲染层在 bootstrap 回调里
+    //  先 NEW_UNTITLED_TAB 建空白页 → app.vue 的 <editor-with-tabs> 随即以
+    //  空 markdown 挂载（Muya 在 onMounted 里一次性吃 props.markdown，此后
+    //  只认 file-loaded / file-changed 两个事件）；紧接着下发的 mt::load-state
+    //  (RESTORE_BUFFERED_STATE) 只换 store 状态、不 emit 上述任一事件 ——
+    //  于是恢复出来的"当前页"永远空白，要切一次标签才出内容（20261014 实测）。
+    const bool bAddBlankTab = !hasRestorableSession();
+    m_bBlankTabByBootstrap = bAddBlankTab;
+    objConfig.insert(QStringLiteral("addBlankTab"), bAddBlankTab);
     objConfig.insert(QStringLiteral("markdownList"), QJsonArray());
     objConfig.insert(QStringLiteral("lineEnding"), sLineEnding);
     objConfig.insert(QStringLiteral("sideBarVisibility"), bSideBar);
@@ -1818,5 +1888,43 @@ bool MarkTextBridge::routeMenuCommand(const QString &sMenuId)
         return true;
     }
 
+    // 5) 缩放（对照 actions/window.ts 的 zoomIn / zoomOut）
+    //    注意官方走的是 mt::window-zoom 而**不是**本地改 preference：
+    //    偏好只是记录，真正的缩放动作必须经渲染层 EDIT_ZOOM 才生效。
+    if (sMenuId == QLatin1String("zoomInMenuItem")) {
+        zoomBy(true);
+        return true;
+    }
+    if (sMenuId == QLatin1String("zoomOutMenuItem")) {
+        zoomBy(false);
+        return true;
+    }
+
     return false;
+}
+
+double MarkTextBridge::zoomBy(bool bZoomIn)
+{
+    // 当前值取 preference.zoom（渲染层每次 EDIT_ZOOM 都会把它写回，
+    // 所以这里读到的一定是"上次生效的缩放"，不是初始默认值）。
+    double dZoom = m_pStore->value(QStringLiteral("zoom")).toDouble();
+    if (dZoom <= 0.0) {
+        dZoom = 1.0;
+    }
+    dZoom += (bZoomIn ? 0.125 : -0.125);
+    dZoom = qBound(0.5, dZoom, 2.0);
+
+    if (!isBridgeReady()) {
+        // 页面还没起来就先记下偏好，等渲染层就绪后自己读表应用
+        m_pStore->setValue(QStringLiteral("zoom"), dZoom);
+        return dZoom;
+    }
+
+    // 载荷是**裸数字**（渲染层 EDIT_ZOOM 里直接 parseFloat + toFixed(3)，
+    // 包成对象会变 NaN）。
+    emitToRenderer(QStringLiteral("mt::window-zoom"), QJsonArray{ dZoom });
+    // 本地同步一份，便于外壳侧显示与下次启动的初值
+    m_pStore->setValue(QStringLiteral("zoom"), dZoom);
+    qInfo("[缩放] %s -> %.3f", bZoomIn ? "放大" : "缩小", dZoom);
+    return dZoom;
 }
