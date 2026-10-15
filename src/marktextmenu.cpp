@@ -667,9 +667,17 @@ void MarkTextMenu::buildWindowMenu(QMenuBar *pBar)
     addCommand(pMenu, QStringLiteral("alwaysOnTopMenuItem"), QStringLiteral("总是在最前面"), QString(), true);              // window.toggle-always-on-top（无默认键位）
     addSeparator(pMenu);
 
-    addCommand(pMenu, QStringLiteral("zoomInMenuItem"),  QStringLiteral("放大"));                                            // window.zoomIn（无默认键位）
-    addCommand(pMenu, QStringLiteral("zoomOutMenuItem"), QStringLiteral("缩小"));                                            // window.zoomOut（无默认键位）
-    addSeparator(pMenu);
+    // 「放大 / 缩小」按需求隐藏，连同它们各自的分隔符。
+    //
+    // 官方 templates/window.ts 确实有这两项（window.zoomIn / zoomOut），
+    // 但都没有默认键位，且缩放在 MarkText 本尊里也只用于调试。
+    // 本工程此前已把缩放接通（MarkTextBridge::zoomBy 下发 mt::window-zoom），
+    // 那套实现**原样保留**在此，只是不再从菜单暴露入口 ——
+    // 将来若要恢复，取消下面两行注释即可，无需重写任何逻辑。
+    //
+    // addCommand(pMenu, QStringLiteral("zoomInMenuItem"),  QStringLiteral("放大"));
+    // addCommand(pMenu, QStringLiteral("zoomOutMenuItem"), QStringLiteral("缩小"));
+    // addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("fullScreenMenuItem"), QStringLiteral("全屏"), QStringLiteral("F11"));                 // window.toggle-full-screen
 }
@@ -697,13 +705,36 @@ void MarkTextMenu::buildThemeMenu(QMenuBar *pBar)
                                        QStringLiteral("跟随系统主题时无法选择主题"));        // menu.theme.followThemDisabled
     m_pThemeDisabledHint->setVisible(false);
 
+    // 按需求只暴露 5 项：跟随系统主题 + Ayu 浅色 + One Dark + Ayu 深色 + Ayu Mirage。
+    //
+    // 实现方式：**白名单**。清单里没有的主题仍然照常 addRadioItem 注册
+    // （互斥组、themeSelected 信号、applyThemeState 的启用/勾选逻辑一概不变），
+    // 只是随后setVisible(false) 隐藏。这样：
+    //   · 用户偏好里存着某个被隐藏的主题时，applyThemeState 仍能正确勾选它、
+    //     pushThemeToRenderer 仍能把它下发渲染层，**主题不会因为"看不见"而失效**；
+    //   · 将来想恢复某个主题，从白名单里删掉它的 id 即可，不必改结构。
+    //
+    // 被隐藏的项若恰好是当前生效主题，菜单里就看不到勾选（外观上的小遗憾，
+    // 但功能正常）；这比"从表里删掉"要安全得多。
+    static const QStringList listVisibleLight = {
+        QStringLiteral("ayu-light")          // Ayu浅色
+    };
+    static const QStringList listVisibleDark = {
+        QStringLiteral("one-dark"),      // One Dark
+        QStringLiteral("ayu-dark"),          // Ayu 深色
+        QStringLiteral("ayu-mirage")        // Ayu Mirage
+    };
+
     // — 浅色主题 —
     addHintItem(pMenu, QStringLiteral("lightThemesHeader"), QStringLiteral("— 浅色主题 —"));  // menu.theme.lightThemes
     for (int i = 0; i < kLightThemeCount; ++i) {
         const Entry &entry = kLightThemes[i];
-        addRadioItem(pMenu, m_pThemeGroup,
-                     QString::fromLatin1(entry.pszId),
-                     QString::fromUtf8(entry.pszText), true);
+        QAction *pAction = addRadioItem(pMenu, m_pThemeGroup,
+                                        QString::fromLatin1(entry.pszId),
+                                        QString::fromUtf8(entry.pszText), true);
+        if (!listVisibleLight.contains(QString::fromLatin1(entry.pszId))) {
+            pAction->setVisible(false);
+        }
     }
 
     addSeparator(pMenu);
@@ -712,9 +743,12 @@ void MarkTextMenu::buildThemeMenu(QMenuBar *pBar)
     addHintItem(pMenu, QStringLiteral("darkThemesHeader"), QStringLiteral("— 深色主题 —"));   // menu.theme.darkThemes
     for (int i = 0; i < kDarkThemeCount; ++i) {
         const Entry &entry = kDarkThemes[i];
-        addRadioItem(pMenu, m_pThemeGroup,
-                     QString::fromLatin1(entry.pszId),
-                     QString::fromUtf8(entry.pszText), true);
+        QAction *pAction = addRadioItem(pMenu, m_pThemeGroup,
+                                        QString::fromLatin1(entry.pszId),
+                                        QString::fromUtf8(entry.pszText), true);
+        if (!listVisibleDark.contains(QString::fromLatin1(entry.pszId))) {
+            pAction->setVisible(false);
+        }
     }
 
     // 初始状态：MarkText 默认 followSystemTheme = true
