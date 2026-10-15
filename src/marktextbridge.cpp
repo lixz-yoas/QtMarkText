@@ -415,6 +415,23 @@ void MarkTextBridge::prepareInjection(WebView2Host *pHost)
                  this, &MarkTextBridge::onScriptResult)) {
         qWarning("MarkTextBridge: executeScriptFinished 连接失败");
     }
+    connect(pHost, &WebView2Host::printToPdfFinished,
+            this, [this](bool bOk, const QString &sBase64) {
+                if (m_bPrintingViaCdp) {
+                    m_bPrintingViaCdp = false;
+                    if (!bOk || sBase64.isEmpty()) {
+                        emit logMessage(QStringLiteral("warn"),
+                                        QStringLiteral("打印失败：未能生成打印内容"));
+                        return;
+                    }
+                    // 打印：交给 printHtml 走 QPrinter（内容已是 Chromium 出的 PDF 位图流，
+                    // 这里直接送打印机；样式与屏幕一致）
+                    printHtml(sBase64);
+                    return;
+                }
+                onCdpPdfReady(bOk, sBase64, m_sPdfOutPath);
+                m_sPdfOutPath.clear();
+            });
 
     // 虚拟主机映射：把 webui 目录挂到 https://marktext.local
     pHost->mapVirtualHost(QStringLiteral("marktext.local"), m_sWebUiDir);
@@ -1346,14 +1363,9 @@ void MarkTextBridge::registerSendHandlers()
     // ---- 打印回执：官方只发信号不带内容（它直接 webContents.print()）。
     //      WebView2 无等价 API，故取整页 HTML 后用 QPrinter 打印。
     m_hashSend.insert(QStringLiteral("mt::response-print"), [this](const QJsonArray &) {
-        grabPageHtml([this](const QString &sHtml) {
-            if (sHtml.isEmpty()) {
-                emit logMessage(QStringLiteral("warn"),
-                                QStringLiteral("打印失败：未能取到页面内容"));
-                return;
-            }
-            printHtml(sHtml);
-        });
+        // 与 PDF 同理：走 Chromium 出PDF 字节流，再送QPrinter ——
+        // 官方是 webContents.print()（也是 Chromium 出品），样式才保真。
+        printViaCdp();
     });
 
     // ---- 布局状态（渲染层自绘侧边栏/标签栏）----
@@ -2111,16 +2123,13 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
     }
 
     if (bPdf) {
-        // 用 QTextDocument 渲染成 PDF。
-        // ⚠ 取舍：QTextDocument 只支持有限 HTML/CSS，复杂样式会被简化 ——
-        //   这是 WebView2 没有 printToPDF() 的替代方案，保证「能出 PDF」，
-        //   不保证与屏幕渲染像素级一致。
-        QTextDocument doc;
-        doc.setHtml(sContent);
-        QPrinter printer(QPrinter::HighResolution);
-        printer.setOutputFormat(QPrinter::PdfFormat);
-        printer.setOutputFileName(sTarget);
-        doc.print(&printer);
+        // pdf 类型时渲染层**不传 content**（官方主进程也不看它，直接调
+        // printToPDF）。所以走 CDP：请渲染层把它用 exportStyledHTML +
+        // printer.renderMarkdown 渲染出的那一页留在页面上，
+        // 再由 Chromium 内核 Page.printToPDF 抓取 —— 与官方同路径。
+        exportPdfViaCdp(objPayload.value(QStringLiteral("pageOptions")).toObject(),
+                         sTarget);
+        return;   // 落盘由 onCdpPdfReady 异步完成
     } else {
         QFile file(sTarget);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -2140,12 +2149,136 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
                        { QStringLiteral("filePath"), sTarget } } });
 }
 
-void MarkTextBridge::printHtml(const QString &sHtml)
+QJsonObject MarkTextBridge::buildPrintToPdfParams(const QJsonObject &objPageOptions)
 {
+    // 对齐官方 main/ipc 的 getPdfPageOptions(pageOptions)：
+    // 纸张尺寸（英寸）+ 四边页边距；并始终 printBackground（否则深色主题背景丢失）
+    QJsonObject obj;
+    obj.insert(QStringLiteral("printBackground"), true);
+    obj.insert(QStringLiteral("preferCSSPageSize"), false);
+
+    // MarkText 的 pageOptions：pageSize / pageSizeWidth / pageSizeHeight / isLandscape
+    const QString sSize = objPageOptions.value(QStringLiteral("pageSize")).toString();
+    double dW = 0.0;
+    double dH = 0.0;
+    if (sSize.compare(QLatin1String("A4"), Qt::CaseInsensitive) == 0) {
+        dW = 8.27;  dH = 11.69;
+    } else if (sSize.compare(QLatin1String("Letter"), Qt::CaseInsensitive) == 0) {
+        dW = 8.5;   dH = 11.0;
+    } else if (sSize.compare(QLatin1String("Legal"), Qt::CaseInsensitive) == 0) {
+        dW = 8.5;   dH = 14.0;
+    } else if (sSize.compare(QLatin1String("Tabloid"), Qt::CaseInsensitive) == 0) {
+        dW = 11.0;  dH = 17.0;
+    } else if (sSize.compare(QLatin1String("A3"), Qt::CaseInsensitive) == 0) {
+        dW = 11.69; dH = 16.54;
+    } else {
+        dW = objPageOptions.value(QStringLiteral("pageSizeWidth")).toDouble(0.0);
+        dH = objPageOptions.value(QStringLiteral("pageSizeHeight")).toDouble(0.0);
+    }
+    if (dW > 0.0 && dH > 0.0) {
+        if (objPageOptions.value(QStringLiteral("isLandscape")).toBool()
+                && dW < dH) {
+            qSwap(dW, dH);
+        }
+        obj.insert(QStringLiteral("paperWidth"),  dW);
+        obj.insert(QStringLiteral("paperHeight"), dH);
+    }
+
+    obj.insert(QStringLiteral("marginTop"),    0.4);
+    obj.insert(QStringLiteral("marginBottom"), 0.4);
+    obj.insert(QStringLiteral("marginLeft"),   0.4);
+    obj.insert(QStringLiteral("marginRight"),  0.4);
+    return obj;
+}
+
+void MarkTextBridge::exportPdfViaCdp(const QJsonObject &objPageOptions,
+                                    const QString &sOutPath)
+{
+    if (m_pHost == nullptr) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("导出 PDF 失败：渲染层尚未就绪"));
+        return;
+    }
+    m_sPdfOutPath = sOutPath;
+    const QString sParams =
+            QString::fromUtf8(QJsonDocument(buildPrintToPdfParams(objPageOptions))
+                                     .toJson(QJsonDocument::Compact));
+    if (!m_pHost->printToPdf(sParams)) {
+        m_sPdfOutPath.clear();
+    }
+}
+
+void MarkTextBridge::onCdpPdfReady(bool bOk, const QString &sBase64Pdf,
+                                  const QString &sOutPath)
+{
+    if (sOutPath.isEmpty()) {
+        return;   // 不是导出 PDF 的那一次（可能是打印），忽略
+    }
+    if (!bOk || sBase64Pdf.isEmpty()) {
+        emit logMessage(QStringLiteral("warn"), QStringLiteral("导出 PDF 失败"));
+        return;
+    }
+    const QByteArray bytes = QByteArray::fromBase64(sBase64Pdf.toLatin1());
+    QFile file(sOutPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("导出 PDF 失败：无法写入 ") + sOutPath);
+        return;
+    }
+    file.write(bytes);
+    file.close();
+    emit logMessage(QStringLiteral("info"), QStringLiteral("已导出：") + sOutPath);
+
+    // 回报渲染层，让它弹「导出成功」并定位文件（对齐官方 mt::export-success）
+    emitToRenderer(QStringLiteral("mt::export-success"),
+                   QJsonArray{ QJsonObject{
+                       { QStringLiteral("type"), QStringLiteral("pdf") },
+                       { QStringLiteral("filePath"), sOutPath } } });
+}
+
+void MarkTextBridge::printViaCdp()
+{
+    if (m_pHost == nullptr) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("打印失败：渲染层尚未就绪"));
+        return;
+    }
+    m_bPrintingViaCdp = true;
+    const QString sParams = QString::fromUtf8(
+            QJsonDocument(buildPrintToPdfParams(QJsonObject()))
+                .toJson(QJsonDocument::Compact));
+    m_pHost->printToPdf(sParams);
+}
+
+void MarkTextBridge::printHtml(const QString &sBase64Pdf)
+{
+    // 入参是 CDP Page.printToPDF 产出的 base64 PDF 字节。
+    //
+    // ⚠ Qt 5.12 没有 QtPdf 模块（QPdfDocument 是 5.13+），QPrinter 无法直接
+    //   把 PDF 作为输入打印。因此这里按「用户在新式打印对话框里选了什么」
+    //   分两种走法：
+    //   · 选了打印机 / 预览   -> 落一份 PDF 到临时文件，再用系统的
+    //     QDesktopServices::openUrl 打开（用户可在系统 PDF 阅读器里直接打印，
+    //     样式与官方一致，不经过 Qt 排版器）；
+    //   · 选了"打印到文件"   -> 直接把 CDP 的 PDF 字节写成那个文件（样式保真）。
+    //   两条路都不经过 QTextDocument，也就都不会丢样式。
+    Q_UNUSED(m_pShellWindow);
+
+    if (sBase64Pdf.isEmpty()) {
+        emit logMessage(QStringLiteral("warn"), QStringLiteral("打印失败：内容为空"));
+        return;
+    }
+    const QByteArray bytesPdf = QByteArray::fromBase64(sBase64Pdf.toLatin1());
+    if (bytesPdf.isEmpty()) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("打印失败：PDF 字节解码失败"));
+        return;
+    }
+
     QPrinter printer(QPrinter::HighResolution);
     printer.setDocName(QStringLiteral("QtMarkText"));
 
-    // Qt 5.12 的签名是 QPrintDialog(QPrinter *printer, QWidget *parent = nullptr)
+    // Qt 5.12 签名：QPrintDialog(QPrinter*, QWidget *parent = nullptr)
     QPrintDialog dlg(&printer, m_pShellWindow);
     dlg.setWindowTitle(QStringLiteral("打印"));
     if (dlg.exec() != QDialog::Accepted) {
@@ -2153,18 +2286,40 @@ void MarkTextBridge::printHtml(const QString &sHtml)
         return;
     }
 
-    // 打印对话框里可能选了"打印到文件"→此时 outputFormat 是 PdfFormat
-    QTextDocument doc;
-    doc.setHtml(sHtml);
-    doc.print(&printer);
-
+    // 「打印到文件」：直接把 CDP 的 PDF 字节写到目标路径（样式保真）
     if (printer.outputFormat() == QPrinter::PdfFormat
             && !printer.outputFileName().isEmpty()) {
-        emit logMessage(QStringLiteral("info"),
-                        QStringLiteral("已输出：") + printer.outputFileName());
-    } else {
-        emit logMessage(QStringLiteral("info"), QStringLiteral("已送往打印机"));
+        QFile file(printer.outputFileName());
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            file.write(bytesPdf);
+            file.close();
+            emit logMessage(QStringLiteral("info"),
+                            QStringLiteral("已输出：") + printer.outputFileName());
+            return;
+        }
     }
+
+    // 选了真实打印机：Qt 5.12 ��法把 PDF 字节喂给 QPrinter，
+    // 故落地一份 PDF 交给系统打开（用户可在此直接打印）。
+    // 不用 QTextDocument —— 那会把主题样式与 KaTeX 公式全部丢掉。
+    const QString sTmp = QDir(QDir::tempPath())
+            .filePath(QStringLiteral("QtMarkText-print-%1.pdf")
+                      .arg(QDateTime::currentMSecsSinceEpoch()));
+    QFile fileTmp(sTmp);
+    if (!fileTmp.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("打印失败：无法写入临时文件 ")
+                        + sTmp);
+        return;
+    }
+    fileTmp.write(bytesPdf);
+    fileTmp.close();
+
+    emit logMessage(QStringLiteral("info"),
+                QStringLiteral("已生成打印内容：") + sTmp
+                  + QStringLiteral("\n（Qt 5.12 无法直接送打印机，"
+                                     "已用系统默认 PDF 程序打开，请在那里打印）"));
+    QDesktopServices::openUrl(QUrl::fromLocalFile(sTmp));
 }
 
 double MarkTextBridge::zoomBy(bool bZoomIn)

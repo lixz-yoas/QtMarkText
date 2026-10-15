@@ -223,8 +223,37 @@ private:
     void grabPageHtml(const std::function<void(const QString &)> &fnDone);
     /// 取当前文档的 markdown 原文（自动保存用）
     void grabCurrentMarkdown(const std::function<void(const QString &)> &fnDone);
-    /// 用 QPrinter + QTextDocument 打印一段 HTML
-    void printHtml(const QString &sHtml);
+    /// 用 Chromium CDP 的 Page.printToPDF 出PDF（等价官方 webContents.printToPDF）
+    ///
+    /// 为什么不用 QTextDocument：那个是 Qt 自己的排版引擎，只认极有限的 CSS，
+    /// 复杂样式（主题变量、KaTeX、代码高亮）会被它丢掉，出不了官方那种 PDF。
+    /// 官方那条路是 webContents.printToPDF —— **由 Chromium 内核渲染**，
+    /// 故样式保真。WebView2 没有同名 API，但 ICoreWebView2_3 提供
+    /// CallDevToolsProtocolMethod（= Chromium DevTools Protocol 原生入口），
+    /// Page.printToPDF 正是其方法之一，故与官方同路径、同保真度。
+    ///
+    /// sParamsJson 为 Page.printToPDF 参数对象（单位英寸）
+    void exportPdfViaCdp(const QJsonObject &objPageOptions, const QString &sOutPath);
+
+    /// CDP 出 PDF 的回调包装（内部把 base64 解成字节写文件）
+    void onCdpPdfReady(bool bOk, const QString &sBase64Pdf, const QString &sOutPath);
+
+    /// 打印：用 CDP 出 PDF 字节流，再交给 QPrinter 送打印机
+    ///（不用 QTextDocument，同样是为了样式保真）
+    void printViaCdp();
+
+    /// 从渲染层的 pageOptions 构造 Page.printToPDF 参数（对齐官方 getPdfPageOptions）
+    QJsonObject buildPrintToPdfParams(const QJsonObject &objPageOptions);
+
+    /// 打印：入参是 CDP Page.printToPDF 产出的 base64 PDF 字节。
+    ///
+    /// ⚠ Qt 5.12 没有 QtPdf 模块（QPdfDocument 需5.13+），QPrinter 无法直接
+    ///   把 PDF 字节当作输入打印。故按打印对话框的选择分两条路：
+    ///   · 选「打印到文件」 -> 直接把 PDF 字节写到目标路径（样式保真）；
+    ///   · 选真实打印机    -> 落地一份临时 PDF 交系统默认程序打开，
+    ///     用户可在那里直接打印。
+    ///   两条路都**不经 QTextDocument**，故不会丢主题样式与 KaTeX 公式。
+    void printHtml(const QString &sBase64Pdf);
     /// 渲染层 mt::response-file-save / -save-as：把渲染层发回的 markdown 落盘，
     /// 并按"新文件 / 覆盖保存"回 mt::set-pathname 或 mt::tab-saved。
     /// 参数顺序：id, filename, pathname, markdown, options, defaultPath
@@ -252,6 +281,12 @@ private:
 
     /// executeScript 的异步回调（同一时刻只会有一个在等）
     std::function<void(const QString &)> m_fnScriptDone;
+
+    /// PDF 导出的目标路径（CDP 出PDF 是异步的，回执里要用它决定写哪）
+    QString m_sPdfOutPath;
+    /// 本次 CDP 调用是「打印」而非「导出」——两者都用 Page.printToPDF，
+    /// 靠这个标志区分后续动作
+    bool m_bPrintingViaCdp = false;
 
     bool m_bBridgeReady;
     bool m_bRendererReady;

@@ -14,6 +14,8 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QFileInfo>
 
 #include <QWidget>
@@ -1137,6 +1139,82 @@ void WebView2Host::executeScript(const QString &sJs)
     ExecuteScriptHandler *pHandler = new ExecuteScriptHandler(m_pImpl);
     m_pImpl->pWebView->ExecuteScript(reinterpret_cast<const wchar_t *>(sJs.utf16()), pHandler);
     pHandler->Release();
+}
+
+//=====================================================================
+//  CallDevToolsProtocolMethod 回调（Page.printToPDF）
+//
+//  CDP 返回形如 {"result":{"data":"JVBERi0xLjcK..."}}，data 是 base64 的 PDF。
+//=====================================================================
+//  CallDevToolsProtocolMethod 回调（Page.printToPDF）
+//
+//  CDP 返回形如 {"result":{"data":"JVBERi0xLjcK..."}}，data 是 base64 的 PDF。
+//  写法对齐上面的 ExecuteScriptHandler —— 用工程既有的 Wv2Callback 基类。
+//=====================================================================
+//  CallDevToolsProtocolMethod 回调（Page.printToPDF）
+//
+//  SDK 里的签名与 ExecuteScriptCompletedHandler 一致：
+//      Invoke(HRESULT errorCode, LPCWSTR result)
+//  result 是 CDP 的 JSON 原文，形如 {"result":{"data":"JVBERi0xLjcK..."}}，
+//  data 是 base64 编码的 PDF。
+//=====================================================================
+class DevToolsCallHandler : public Wv2Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>
+{
+public:
+    explicit DevToolsCallHandler(WebView2Host::Impl *pImpl) : m_pImpl(pImpl) {}
+
+    const IID &iidOfInterface() const override
+    {
+        return IID_ICoreWebView2CallDevToolsProtocolMethodCompletedHandler;
+    }
+
+    HRESULT STDMETHODCALLTYPE Invoke(HRESULT hrResult, LPCWSTR pszResult) override
+    {
+        QString sBase64;
+        if (SUCCEEDED(hrResult) && pszResult != nullptr) {
+            const QJsonDocument doc =
+                QJsonDocument::fromJson(QString::fromWCharArray(pszResult).toUtf8());
+            const QJsonObject obj = doc.object()
+                    .value(QStringLiteral("result")).toObject();
+            sBase64 = obj.value(QStringLiteral("data")).toString();
+        }
+        emit m_pImpl->pHost->printToPdfFinished(!sBase64.isEmpty(), sBase64);
+        return S_OK;
+    }
+
+private:
+    WebView2Host::Impl *m_pImpl;
+};
+
+bool WebView2Host::printToPdf(const QString &sParamsJson)
+{
+    if (m_pImpl == nullptr || m_pImpl->pWebView == nullptr) {
+        return false;
+    }
+    // ICoreWebView2_3 起才有 CallDevToolsProtocolMethod。
+    // 创建时已 QueryInterface 过 pWebView3（它继承自 ICoreWebView2_3），直接用它。
+    // 拿不到就明确失败，不做静默降级。
+    ICoreWebView2_3 *pWebView3 = m_pImpl->pWebView3.Get();
+    if (pWebView3 == nullptr) {
+        qWarning("WebView2: 当前 SDK/运行时不支持 CallDevToolsProtocolMethod"
+                 "（需 ICoreWebView2_3，SDK >= 1.0.1108）");
+        emit printToPdfFinished(false, QString());
+        return false;
+    }
+
+    DevToolsCallHandler *pHandler = new DevToolsCallHandler(m_pImpl);
+    const HRESULT hr = pWebView3->CallDevToolsProtocolMethod(
+        L"Page.printToPDF",
+        reinterpret_cast<LPCWSTR>(sParamsJson.utf16()),
+        pHandler);
+    pHandler->Release();
+
+    if (FAILED(hr)) {
+        qWarning("WebView2: Page.printToPDF 调用失败 hr=0x%08lX", (unsigned long)hr);
+        emit printToPdfFinished(false, QString());
+        return false;
+    }
+    return true;
 }
 
 void WebView2Host::openDevTools()

@@ -108,6 +108,23 @@ public:
     /// 在页面里执行脚本（异步，结果通过 executeScriptFinished 回传）
     void executeScript(const QString &sJs);
 
+    /// 用 Chromium 内核把当前页面导出为 PDF（等价 Electron 的 webContents.printToPDF）。
+    ///
+    /// 实现走 ICoreWebView2_3::CallDevToolsProtocolMethod("Page.printToPDF", params)
+    /// —— 即 Chromium DevTools Protocol，与官方同一条渲染路径，故样式保真。
+    ///
+    /// 官方 MarkText 导出 PDF 的链路是
+    ///渲染层 exportStyledHTML() -> printer.renderMarkdown() 渲染出打印页
+    ///    -> 主进程 webContents.printToPDF()  ← 由 Chromium 内核出 PDF，
+    /// 所以 CSS / 字体 / KaTeX / 代码高亮全都对。
+    ///
+    /// sParamsJson 是 Page.printToPDF 的参数对象（单位英寸），如
+    ///   {"printBackground":true,"paperWidth":8.27,"paperHeight":11.69,
+    ///    "marginTop":0.4,"marginBottom":0.4,"marginLeft":0.4,"marginRight":0.4}
+    /// 结果经 printToPdfFinished 信号回传（base64 编码的 PDF 数据）。
+    /// 需 ICoreWebView2_3（SDK >= 1.0.1108）；宿主创建时已 QueryInterface 过。
+    bool printToPdf(const QString &sParamsJson);
+
     void openDevTools();
     void close();
 
@@ -123,6 +140,9 @@ signals:
     void documentTitleChanged(const QString &sTitle);
     void newWindowRequested(const QString &sUrl);
     void executeScriptFinished(bool bSuccess, const QString &sResultJson);
+    /// printToPdf 的异步结果：bOk=false 表示 CDP 调用失败或宿主不可用；
+    /// sBase64Pdf 是 base64 编码的 PDF 字节（成功时非空）
+    void printToPdfFinished(bool bOk, const QString &sBase64Pdf);
     void processFailed(int nKind, const QString &sDescription);
     /// 键盘加速键（nKeyKind 见 COREWEBVIEW2_KEY_KIND，nVirtualKey 为 Win32 VK_*）
     void acceleratorKeyPressed(int nKeyKind, int nVirtualKey);
