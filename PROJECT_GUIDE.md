@@ -1,8 +1,8 @@
 # QtMarkText 工程导览与构建运行指南
 
 > 版本：20261012（主题对齐 ayu-mirage 后）
-> 主工程：仓库根目录（`<repo>/`）
-> 参考源码：MarkText v0.19.1 官方仓库（<https://github.com/marktext/marktext>，MIT）
+> 主工程：`D:\MarkText\QtMarkText`
+> 参考源码：`<upstream>`（MarkText v0.19.1，MIT）
 
 ---
 
@@ -11,7 +11,7 @@
 **Qt 外壳（主进程替身）+ MarkText 官方渲染层（零改动）**：
 
 ```
-QtMarkText.exe（Qt 5.12.8）
+QtMarkText.exe（Qt 5.12.9）
  ├─ MainWindow            窗口/菜单/标签页/文件树/状态栏（Qt 部分）
  ├─ MarkTextBridge        Electron 主进程替身：IPC 通道 + 菜单路由 + 偏好同步
  ├─ WebView2Host          WebView2 运行时宿主（动态加载，无链接期依赖）
@@ -27,7 +27,7 @@ Qt 侧只负责"Electron 主进程原本该干的事"。
 
 ## 二、关联的代码 / 工程 / 文件夹全清单
 
-### 2.1 主工程根目录 `<repo>/`
+### 2.1 主工程 `D:\MarkText\QtMarkText`
 
 | 路径 | 内容 | 说明 |
 |------|------|------|
@@ -46,7 +46,6 @@ Qt 侧只负责"Electron 主进程原本该干的事"。
 
 > **每个 .cpp 的完整对外接口（public 方法 / 静态方法 / 信号）见 `readme.md` 的
 > 「附：源码模块与对外接口一览（20261013）」一节**——本节只给一句话职责。
-> （`readme.md` 系内部开发日志，未随本仓库发布。）
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
@@ -75,11 +74,11 @@ Qt 侧只负责"Electron 主进程原本该干的事"。
 
 | 路径 / 组件 | 用途 | 是否编译依赖 |
 |-------------|------|--------------|
-| `<repo>/third_party/webview2/`（由 `scripts/fetch-webview2-sdk.ps1` 获取） | WebView2 SDK：`include/WebView2.h` + `include/EventToken.h`（自建 shim）、`lib/libWebView2Loader.a`、`bin/WebView2Loader.dll` | 是（`.pro` 中以 `$$PWD` 相对定位） |
-| Qt 5.12.x  mingw73_64 套件目录（如 `<Qt>/5.12.9/mingw73_64/`） | qmake、Qt5*.dll | 是 |
-| MinGW-w64 7.3 工具链目录（如 `<Qt>/Tools/mingw730_64/`） | g++、mingw32-make | 是 |
-| Qt Creator（`<Qt>/Tools/QtCreator/bin/qtcreator.exe`） | IDE，**推荐 4.11.2+** | 否 |
-| MarkText v0.19.1 源码副本 | 对照主题 CSS、菜单模板、i18n | 否（只读参考） |
+| `<repo>/third_party/webview2/` | WebView2 SDK：`include/WebView2.h` + `include/EventToken.h`（自建 shim）、`lib/libWebView2Loader.a`、`bin/WebView2Loader.dll` | **是，路径硬编码在 .pro** |
+| `<Qt>/5.12.9/mingw73_64/` | Qt 5.12.9（qmake、Qt5*.dll） | 是 |
+| `<Qt>/Tools/mingw730_64/` | MinGW-w64 7.3 编译器（g++、mingw32-make） | 是 |
+| `<Qt>/Tools/QtCreator/bin/qtcreator.exe` | Qt Creator **4.11.2**（IDE） | 否 |
+| `<upstream>/` | MarkText 源码副本（对照主题 CSS、菜单模板、i18n） | 否（只读参考） |
 | 本机 MarkText 安装目录 | 渲染层 `app.asar` 的来源（已抽取到 `webui/`，仅在需重抽时用） | 否 |
 | **WebView2 Runtime**（系统级） | 运行期浏览器内核（Win10/11 通常自带，或装 Evergreen Runtime） | 运行依赖 |
 
@@ -113,16 +112,16 @@ QtMarkText.pro ──> src/*.cpp
 
 | 检查项 | 期望值 | 缺了怎么办 |
 |--------|--------|-----------|
-| Qt Creator | `<Qt>/Tools/QtCreator/bin/qtcreator.exe`（4.11.2+） | 用同版本安装包补装 |
-| Kit | Qt 5.12.x MinGW 64-bit | Qt Creator → 工具→选项→Kits 里确认 qmake 指向 `<Qt>/5.12.9/mingw73_64/bin/qmake.exe` |
-| WebView2 SDK | `<repo>/third_party/webview2/` 存在 | 先运行 `scripts/fetch-webview2-sdk.ps1`；路径见 `.pro` 的 `QTMT_WEBVIEW2_DIR` |
+| Qt Creator | `<Qt>/Tools/QtCreator/bin/qtcreator.exe`（4.11.2） | 用同版本安装包补装 |
+| Kit | `qt.qt5.5129.win64_mingw73_kit` | Qt Creator → 工具→选项→Kits 里确认 qmake 指向 `<Qt>/5.12.9/mingw73_64/bin\qmake.exe` |
+| WebView2 SDK | `<repo>/third_party/webview2/` 存在 | 工程**硬依赖此绝对路径**，若换盘需同步改 `.pro` 第 39 行 |
 | WebView2 Runtime | 系统已装 | 装 Evergreen Runtime（或 Edge 自带） |
 
 ### 步骤 1：打开工程
 
 1. 启动 Qt Creator → **文件 → 打开文件或项目**
-2. 选 `<repo>/QtMarkText.pro` → 打开
-3. 若弹出 "Configure Project"，勾选 **Desktop Qt 5.12.8 MinGW 64-bit** → *Configure Project*
+2. 选 `D:\MarkText\QtMarkText\QtMarkText.pro` → 打开
+3. 若弹出 "Configure Project"，勾选 **Desktop Qt 5.12.9 MinGW 64-bit** → *Configure Project*
 
 ### 步骤 2：选择构建配置
 
@@ -130,12 +129,12 @@ QtMarkText.pro ──> src/*.cpp
 
 | 项 | 建议值 |
 |----|--------|
-| Kit | Desktop Qt 5.12.8 MinGW 64-bit |
+| Kit | Desktop Qt 5.12.9 MinGW 64-bit |
 | Build | **Release**（默认 Debug 也能跑，但体积与速度差很多） |
-| 构建目录 | 工程外的影子目录（如 `../build-QtMarkText-Desktop_Qt_5_12_9_MinGW_64_bit-Release`） |
+| 构建目录 | 影子目录，如 `<build>` |
 
 > 注意：`.pro` 里写了 `DESTDIR = $$PWD/bin`，所以**不管影子目录在哪，exe 始终输出到
-> `<repo>/bin/QtMarkText.exe`**。这是有意为之——webui 与运行库都在那边。
+> `D:\MarkText\QtMarkText\bin\QtMarkText.exe`**。这是有意为之——webui 与运行库都在那边。
 >
 > 说明：`build_shell/` 是命令行备用构建（`qmake + mingw32-make`），与 Qt Creator 影子构建
 > 并存互不干扰——两者产物都落到同一个 `bin/`。当前 `bin/QtMarkText.exe` 即命令构建产出。
@@ -144,15 +143,15 @@ QtMarkText.pro ──> src/*.cpp
 
 - 快捷键 **Ctrl+B**，或左下角 🔨 图标，或 构建 → 构建项目 "QtMarkText"
 - 应达到 **0 错误 0 警告**（工程用 `-Wall -Wextra` 且第三方头用 `-isystem` 豁免）
-- 编译日志出现 `-isystem <repo>/third_party/webview2/include` 属正常
+- 编译日志出现 `-isystem D:/MarkText/third_party/webview2/include` 属正常
 
 ### 步骤 4：运行
 
 - **Ctrl+R**（运行），或左下角 ▶
 - 首次运行会自动创建 `bin/config/` 与 `bin/config/webview2/`
 - **带文件启动**（推荐，验证渲染）：项目 → 运行 → Run 设置里的"命令行参数"填
-  `<repo>/sample.md`（或直接双击 exe 时把 md 拖到其图标上）
-- 建议把运行设置的 **Working directory** 设为 `<repo>/bin`
+  `D:\MarkText\QtMarkText\readme.md`（或直接双击 exe 时把 md 拖到其图标上）
+- 建议把运行设置的 **Working directory** 设为 `D:\MarkText\QtMarkText\bin`
   （程序内部用 `applicationDirPath()` 定位资源，工作目录只影响相对路径参数）
 
 ### 步骤 5：验证是否正常（自查清单）
@@ -169,12 +168,12 @@ QtMarkText.pro ──> src/*.cpp
 
 ### 步骤 6：分发（拷到别的机器）
 
-1. 拷整个 `<repo>/bin/`（含 `platforms/`、`styles/`、插件、`config/`、12 个 DLL）
+1. 拷整个 `D:\MarkText\QtMarkText\bin\`（含 `platforms/`、`styles/`、插件、`config/`、12 个 DLL）
    **注意 `Qt5Network.dll` 必须带上**——单实例保护用了 `QLocalServer`（`QT += network`），
    缺它 exe 会"启动即消失"且没有任何报错。
-2. 拷 `<repo>/webui/` 到 **bin 的上一级**（即保持 `bin/../webui` 关系）
+2. 拷 `D:\MarkText\QtMarkText\webui\` 到 **bin 的上一级**（即保持 `bin/../webui` 关系）
 3. 目标机需有 WebView2 Runtime
-4. 如重装 Qt 库：`<Qt>/5.12.9/mingw73_64/bin/windeployqt.exe bin\QtMarkText.exe`
+4. 如重装 Qt 库：`<Qt>/5.12.9/mingw73_64/bin\windeployqt.exe bin\QtMarkText.exe`
 
 ---
 
@@ -191,7 +190,7 @@ QtMarkText.pro ──> src/*.cpp
 | 弹防火墙/联网提示 | Chromium 后台联网行为 | 已由 `EnvOptions`（`webview2host.cpp`）注入 `--disable-background-networking` 等参数关掉；实测 0 外部连接、0 监听端口 |
 | 截图全黑（自动化验证时） | 历史上即上述 bounds=0×0 黑屏（最小化→还原触发 Resize 修正了 bounds，故"看起来像 DWM 合成问题"）；20261013 已修根因 | `tools/grab_window.py` 仍保留最小化→还原保险 |
 | 编译报 `-Wunknown-pragmas` | WebView2 官方头有 MSVC pragma | 必须保持 `-isystem`（INCLUDEPATH 无效），勿改回 |
-| `.pro` 里 webview2 路径失效 | SDK 缺失 | 重新运行 `scripts/fetch-webview2-sdk.ps1` |
+| `.pro` 里 webview2 路径失效 | SDK 是绝对路径 | 改 `.pro` 第 39 行 `QTMT_WEBVIEW2_DIR` |
 | webui 换位置后白屏 | 目录查找顺序受限 | 设环境变量 `QTMT_WEBUI_DIR=<绝对路径>` 覆盖 |
 
 ---
@@ -205,3 +204,31 @@ QtMarkText.pro ──> src/*.cpp
 | `QTMT_SELFTEST=1` | 设为环境变量后启动 | 注入页面自检脚本，周期回报 DOM 文本与样式 |
 | `QTMT_ENGINE` | `=webview2` / 其它 | 强制指定引擎（占位 / WebView2） |
 | `QTMT_WEBUI_DIR` | 绝对路径 | 覆盖 webui 资源目录定位 |
+
+### 提交规范（20261015 起）
+
+SVN 提交日志必须为正常中文，**提交时一律带 `--encoding UTF-8`**：
+
+```bash
+svn --encoding UTF-8 commit -F <msg文件>
+```
+
+原因：`svn.exe` 读 `-F` 文件时默认按本地 ANSI 代码页（本机 GBK）解读，
+而 msg 文件是 UTF-8 —— 不加该参数，中文会被破坏并原样写入仓库，且事后
+无法补救（仓库未开 `pre-revprop-change` 钩子，`svn:log` 不可改）。
+
+msg 文件用 Python 显式写 UTF-8：
+
+```python
+open('m.txt', 'w', encoding='utf-8', newline='\n').write('...中文...')
+```
+
+提交后建议做一次字节级验真（终端里看着像乱码不作数，Git Bash 自身也会
+把正常 UTF-8 按 GBK 显示成乱码）：
+
+```bash
+svn log -r <N> --xml <仓库URL> > tmp.xml
+# 用 Python 取 <msg> 段 decode('utf-8')，与本地 msg 逐字比对
+```
+
+详见 readme.md 的「工程规范」一节。
