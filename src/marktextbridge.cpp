@@ -2119,6 +2119,26 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
         sDir = QDir::homePath();
     }
 
+    // 自测模式：路径已指定，跳过对话框
+    if (!m_sSelfTestHtmlPath.isEmpty()) {
+        const QString sType2 = sType;
+        const QString sContent2 = sContent;
+        const QString sTarget2 = m_sSelfTestHtmlPath;
+        qInfo("[自测] 收到 mt::response-export type=%s content长度=%d",
+              qPrintable(sType2), sContent2.size());
+        QFile f2(sTarget2);
+        if (!f2.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            qInfo("[自测] 无法写入 %s", qPrintable(sTarget2));
+        } else {
+            f2.write(sContent2.toUtf8());
+            f2.close();
+            qInfo("[自测] 导出成功：%s（%d 字节）",
+                  qPrintable(sTarget2), QFileInfo(sTarget2).size());
+        }
+        m_sSelfTestHtmlPath.clear();
+        return;
+    }
+
     const QString sTarget = QFileDialog::getSaveFileName(
         m_pShellWindow,
         bPdf ? QStringLiteral("导出为 PDF") : QStringLiteral("导出为 HTML"),
@@ -2155,6 +2175,37 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
                    QJsonArray{ QJsonObject{
                        { QStringLiteral("type"), sType },
                        { QStringLiteral("filePath"), sTarget } } });
+}
+
+void MarkTextBridge::exportHtmlForSelfTest(const QString &sPath)
+{
+    if (m_pHost == nullptr) {
+        qInfo("[自测] 导出失败：宿主未就绪");
+        return;
+    }
+    m_sSelfTestHtmlPath = sPath;
+    qInfo("[自测] 已发 mt::show-export-dialog styledHtml -> %s",
+          qPrintable(sPath));
+    emitToRenderer(QStringLiteral("mt::show-export-dialog"),
+                   QJsonArray{ QStringLiteral("styledHtml") });
+}
+
+void MarkTextBridge::printToPdfForSelfTest(const QString &sPath)
+{
+    if (m_pHost == nullptr) {
+        qInfo("[自测] PDF 失败：宿主未就绪");
+        return;
+    }
+    m_sPdfOutPath = sPath;
+    const QString sParams = QString::fromUtf8(
+            QJsonDocument(buildPrintToPdfParams(QJsonObject()))
+                .toJson(QJsonDocument::Compact));
+    qInfo("[自测] 调 CDP Page.printToPDF -> %s", qPrintable(sPath));
+    qInfo("[自测]   params=%s", qPrintable(sParams));
+    if (!m_pHost->printToPdf(sParams)) {
+        qInfo("[自测] printToPdf 返回 false（ICoreWebView2_3 不可用？）");
+        m_sPdfOutPath.clear();
+    }
 }
 
 QJsonObject MarkTextBridge::buildPrintToPdfParams(const QJsonObject &objPageOptions)
@@ -2227,6 +2278,12 @@ void MarkTextBridge::onCdpPdfReady(bool bOk, const QString &sBase64Pdf,
         return;
     }
     const QByteArray bytes = QByteArray::fromBase64(sBase64Pdf.toLatin1());
+    qInfo("[自测] CDP 回执：ok=%d base64长度=%d 解码后=%d 字节 前4字节=%02X%02X%02X%02X",
+          bOk ? 1 : 0, sBase64Pdf.size(), bytes.size(),
+          bytes.size() >= 4 ? (unsigned char)bytes[0] : 0,
+          bytes.size() >= 4 ? (unsigned char)bytes[1] : 0,
+          bytes.size() >= 4 ? (unsigned char)bytes[2] : 0,
+          bytes.size() >= 4 ? (unsigned char)bytes[3] : 0);
     QFile file(sOutPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         emit logMessage(QStringLiteral("warn"),
@@ -2235,6 +2292,8 @@ void MarkTextBridge::onCdpPdfReady(bool bOk, const QString &sBase64Pdf,
     }
     file.write(bytes);
     file.close();
+    qInfo("[自测] PDF 已落盘：%s（%d 字节）",
+          qPrintable(sOutPath), QFileInfo(sOutPath).size());
     emit logMessage(QStringLiteral("info"), QStringLiteral("已导出：") + sOutPath);
 
     // 回报渲染层，让它弹「导出成功」并定位文件（对齐官方 mt::export-success）

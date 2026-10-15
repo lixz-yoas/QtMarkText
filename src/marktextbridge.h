@@ -93,6 +93,14 @@ public:
     //  外壳用 QTextDocument 渲染成 PDF / 送打印机」。
     //-----------------------------------------------------------------
     /// 导出为 HTML（type = "styledHtml"）
+    //-----------------------------------------------------------------
+    //  免对话框版本（仅供环境变量触发的自测用，见 MainWindow 里的自测钩子）
+    //-----------------------------------------------------------------
+    /// 让渲染层出导出内容，结果直接落 sPath（不弹保存对话框）
+    void exportHtmlForSelfTest(const QString &sPath);
+    /// 让渲染层出打印内容并走 CDP 出 PDF，直接落 sPath（不弹任何对话框）
+    void printToPdfForSelfTest(const QString &sPath);
+
     void exportHtml();
     /// 导出为 PDF（type = "pdf"）
     void exportPdf();
@@ -245,6 +253,8 @@ private:
     /// 从渲染层的 pageOptions 构造 Page.printToPDF 参数（对齐官方 getPdfPageOptions）
     QJsonObject buildPrintToPdfParams(const QJsonObject &objPageOptions);
 
+
+
     /// 打印：入参是 CDP Page.printToPDF 产出的 base64 PDF 字节。
     ///
     /// ⚠ Qt 5.12 没有 QtPdf 模块（QPdfDocument 需5.13+），QPrinter 无法直接
@@ -284,6 +294,8 @@ private:
 
     /// PDF 导出的目标路径（CDP 出PDF 是异步的，回执里要用它决定写哪）
     QString m_sPdfOutPath;
+    /// 自测用的 HTML 落盘路径（走 mt::response-export 回执，区别于正常导出）
+    QString m_sSelfTestHtmlPath;
     /// 本次 CDP 调用是「打印」而非「导出」——两者都用 Page.printToPDF，
     /// 靠这个标志区分后续动作
     bool m_bPrintingViaCdp = false;

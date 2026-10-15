@@ -1275,6 +1275,31 @@ IEditorEngine *MainWindow::addEditorTab()
         // 同上，就绪后再恢复"上次打开的文件夹"（渲染层的项目树监听此时才注册好）
         connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
                 this, &MainWindow::restoreLastOpenedFolder);
+        // ---- 导出链路自测（环境变量触发，仅用于无人值守验证）----
+        //  本机无法操作菜单（输入注入被拦），故让程序自己触发一遍。
+        //  QTMT_SELFTEST_EXPORT_PDF / _HTML / _PRINT = 1 时生效。
+        if (!qEnvironmentVariableIsEmpty("QTMT_SELFTEST_EXPORT")) {
+            const QString sWhich = qEnvironmentVariable("QTMT_SELFTEST_EXPORT").toLower();
+            const QString sDir = QCoreApplication::applicationDirPath()
+                                 + QStringLiteral("/config");
+            QDir().mkpath(sDir);
+            connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
+                    this, [this, sWhich, sDir, pEngine]() {
+                // 等渲染层真正就绪（垫片握手 + 首帧）再动，否则页面还没内容
+                QTimer::singleShot(4000, this, [this, sWhich, sDir, pEngine]() {
+                    qInfo("[自测] 触发导出：%s", qPrintable(sWhich));
+                    if (sWhich == QLatin1String("html")) {
+                        // HTML 分支走 mt::response-export 回来的 content，
+                        // 用一个固定目录 + 不弹框的方式落盘
+                        pEngine->bridge()->exportHtmlForSelfTest(
+                            sDir + QStringLiteral("/selftest_export.html"));
+                    } else {
+                        pEngine->bridge()->printToPdfForSelfTest(
+                            sDir + QStringLiteral("/selftest_export.pdf"));
+                    }
+                });
+            });
+        }
         // ---- 会话恢复 ----
         //  bridge 在 mt::window-initialized 后若成功下发了 mt::load-state，
         //  会回 sessionRestored()。此时"上次目录"就不该再抢项目树了：
