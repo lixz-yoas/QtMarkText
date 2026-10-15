@@ -2085,7 +2085,16 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
     const QString sPathname = objPayload.value(QStringLiteral("pathname")).toString();
     const QString sFilename = objPayload.value(QStringLiteral("filename")).toString();
 
-    if (sContent.isEmpty()) {
+    const bool bPdf = (sType == QLatin1String("pdf"));
+
+    // ⚠ content 为空的判断**必须区分类型**（r183 的 bug，这里曾无条件 return，
+    //   导致 PDF 导出永远走不到后面的 CDP 分支）：
+    //   · html 分支靠 content 落盘 → 空即失败；
+    //   · pdf  分支**本来就没有 content** —— 官方 handleResponseForExport 里
+    //     pdf 走 printToPDF()、只有 else 分支才检查 content，
+    //     渲染层 EXPORT({type:"pdf"}) 也没传 content。PDF 的内容由
+    //     Chromium 直接从当前页面抓，故此处不能拦。
+    if (!bPdf && sContent.isEmpty()) {
         emit logMessage(QStringLiteral("warn"),
                         QStringLiteral("导出失败：渲染层未返回内容"));
         return;
@@ -2101,7 +2110,6 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
     }
     sNaked = sanitizeFileName(sNaked.isEmpty() ? QStringLiteral("Untitled") : sNaked);
 
-    const bool bPdf   = (sType == QLatin1String("pdf"));
     const QString sExt = bPdf ? QStringLiteral(".pdf") : QStringLiteral(".html");
 
     QString sDir = sPathname.isEmpty()
