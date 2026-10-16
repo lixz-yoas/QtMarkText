@@ -24,12 +24,16 @@ DESTDIR = $$PWD/bin
 # 渲染层内核：Microsoft Edge WebView2
 #
 # 说明：
-#   1) SDK 头文件为 MIDL 生成的纯 C/C++ 头（不含 WRL），MinGW-w64 可直接编译；
-#      仅需本工程自建的 EventToken.h shim（见 include/ 内注释）。
+#   1) SDK 头文件为 MIDL 生成的纯 C/C++ 头（不含 WRL），MinGW-w64 可直接编译。
+#      两个头都在本工程内，用 $$PWD 相对定位 —— 换机器 / 换 shadow 目录都不受影响：
+#        third_party/webview2/include/WebView2.h   官方 SDK 头（vendored）
+#        include/EventToken.h                      本工程自建的 MinGW shim
+#      （原先前者的路径写成作者机器上的 D:/MarkText/third_party/webview2，
+#        本机没有该目录，导致 Qt Creator 里编译失败。）
 #   2) WebView2Loader 采用「动态加载」（webview2host.cpp 内 LoadLibrary），
-#      因此这里的 -lWebView2Loader 只是显式声明依赖目录，便于将来切静态链接；
-#      实际运行不依赖链接期符号 —— 没装 WebView2 Runtime 的机器也能启动。
-#   3) 目录用绝对路径，避免 shadow build 下相对层级错位。
+#      链接期不需要它，故不加 -lWebView2Loader；
+#      没装 WebView2 Runtime 的机器也能启动。
+#   3) 用 $$PWD 而不是绝对路径，shadow build 下自动跟随源目录。
 #   4) **刻意不用 INCLUDEPATH，而用 -isystem**：
 #      官方 WebView2.h 第 19 行是 MSVC 专用的 #pragma warning，GCC 会报
 #      -Wunknown-pragmas；而 GCC 的 diagnostic pragma 包夹对该告警无效（实测 7.3），
@@ -38,9 +42,9 @@ DESTDIR = $$PWD/bin
 #-------------------------------------------------
 QTMT_WEBVIEW2_DIR = $$PWD/third_party/webview2
 
-QMAKE_CXXFLAGS += -isystem $$QTMT_WEBVIEW2_DIR/include
+QMAKE_CXXFLAGS += -isystem $$QTMT_WEBVIEW2_DIR/include -isystem $$PWD/include
 # -lole32/-luuid：CoInitializeEx / CoTaskMemFree / IID_IUnknown
-LIBS           += -L$$QTMT_WEBVIEW2_DIR/lib -lWebView2Loader -lshell32 -lole32 -luuid
+LIBS           += -lshell32 -lole32 -luuid
 
 SOURCES += \
     src/main.cpp \
