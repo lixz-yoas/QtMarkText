@@ -823,34 +823,35 @@ void MarkTextMenu::buildHelpMenu(QMenuBar *pBar)
 {
     QMenu *pMenu = pBar->addMenu(QStringLiteral("帮助"));            // menu.help.help
 
+    // 按需求只保留首尾两项：「Markdown 参考」（第一项）与「关于」（最后一项），
+    // 其余全部隐藏。addLinkItem/addCommand 的实现与路由均保留，
+    // 需要恢复时取消注释即可。
     addLinkItem(pMenu, QStringLiteral("markdownReferenceMenuItem"), QStringLiteral("Markdown 参考"),
                 QStringLiteral("https://marktext.me/docs/markdown-syntax"));
-    addLinkItem(pMenu, QStringLiteral("changelogMenuItem"), QStringLiteral("更新日志"),
-                QStringLiteral("https://github.com/marktext/marktext/releases"));
-    addSeparator(pMenu);
 
-    addLinkItem(pMenu, QStringLiteral("followUsMenuItem"), QStringLiteral("关注我们"),
-                QStringLiteral("https://twitter.com/marktextapp"));
-    addLinkItem(pMenu, QStringLiteral("supportMenuItem"), QStringLiteral("支持 MarkText"),
-                QStringLiteral("https://github.com/sponsors/marktext"));
-    addSeparator(pMenu);
-
-    addLinkItem(pMenu, QStringLiteral("askQuestionMenuItem"), QStringLiteral("提问"),
-                QStringLiteral("https://github.com/marktext/marktext/discussions"));
-    addLinkItem(pMenu, QStringLiteral("reportBugMenuItem"), QStringLiteral("报告错误"),
-                QStringLiteral("https://github.com/marktext/marktext/issues"));
-    addLinkItem(pMenu, QStringLiteral("viewSourceMenuItem"), QStringLiteral("查看源码"),
-                QStringLiteral("https://github.com/marktext/marktext"));
-    addSeparator(pMenu);
-
-    addLinkItem(pMenu, QStringLiteral("licenseMenuItem"), QStringLiteral("许可证"),
-                QStringLiteral("https://github.com/marktext/marktext/blob/develop/LICENSE"));
-
+    // 以下按需求隐藏：
+    // addLinkItem(pMenu, QStringLiteral("changelogMenuItem"), QStringLiteral("更新日志"),
+    //             QStringLiteral("https://github.com/marktext/marktext/releases"));
+    // addSeparator(pMenu);
+    // addLinkItem(pMenu, QStringLiteral("followUsMenuItem"), QStringLiteral("关注我们"),
+    //             QStringLiteral("https://twitter.com/marktextapp"));
+    // addLinkItem(pMenu, QStringLiteral("supportMenuItem"), QStringLiteral("支持 MarkText"),
+    //             QStringLiteral("https://github.com/sponsors/marktext"));
+    // addSeparator(pMenu);
+    // addLinkItem(pMenu, QStringLiteral("askQuestionMenuItem"), QStringLiteral("提问"),
+    //             QStringLiteral("https://github.com/marktext/marktext/discussions"));
+    // addLinkItem(pMenu, QStringLiteral("reportBugMenuItem"), QStringLiteral("报告错误"),
+    //             QStringLiteral("https://github.com/marktext/marktext/issues"));
+    // addLinkItem(pMenu, QStringLiteral("viewSourceMenuItem"), QStringLiteral("查看源码"),
+    //             QStringLiteral("https://github.com/marktext/marktext"));
+    // addSeparator(pMenu);
+    // addLinkItem(pMenu, QStringLiteral("licenseMenuItem"), QStringLiteral("许可证"),
+    //             QStringLiteral("https://github.com/marktext/marktext/blob/develop/LICENSE"));
+    //
     // MarkText：仅当 resources/app-update.yml 存在（安装版）时追加「检查更新」
-    addSeparator(pMenu);
-    addCommand(pMenu, QStringLiteral("checkUpdatesMenuItem"), QStringLiteral("检查更新"));
+    // addSeparator(pMenu);
+    // addCommand(pMenu, QStringLiteral("checkUpdatesMenuItem"), QStringLiteral("检查更新"));
 
-    // MarkText：非 macOS 追加「关于」
     addSeparator(pMenu);
     addCommand(pMenu, QStringLiteral("aboutMenuItem"), QStringLiteral("关于"));      // menu.help.about
 }

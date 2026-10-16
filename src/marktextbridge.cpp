@@ -246,6 +246,72 @@ MarkTextBridge::MarkTextBridge(PreferencesStore *pStore, QObject *parent)
     registerSendHandlers();
 }
 
+/// 「段落前悬浮工具栏」功能自检脚本（仅 QTMT_CHECK_FRONTBAR=1 时执行）
+///
+/// 用途：本机沙箱抓不到 WebView2 画面（GPU 合成层读不到），UI 改动无法用
+///       截图验证。于是**按官方 FrontMenu 的真实结构造一份 DOM**，读回
+///       getComputedStyle，用数值判断补丁是否生效。
+///       之所以必须造一份而不是直接查真实元素：官方的 FrontMenu 只在
+///       「点开」时才 render() 出 ul，启动后容器是空的。
+const char *const kFrontBarCheckScript =
+    "(function(){\n"
+    "  try{\n"
+    "    var hasStyle = !!document.getElementById('qtmt-frontmenu-bar-style');\n"
+    "    var wrap = document.createElement('div');\n"
+    "    wrap.className = 'ag-float-wrapper';\n"
+    "    var menu = document.createElement('div');\n"
+    "    menu.className = 'ag-front-menu ag-float-container';\n"
+    "    var inner = document.createElement('div');\n"
+    "    var ul = document.createElement('ul');\n"
+    "    function mk(cls, text, cut){\n"
+    "      var li = document.createElement('li');\n"
+    "      li.className = 'item ' + cls;\n"
+    "      var iw = document.createElement('div'); iw.className = 'icon-wrapper';\n"
+    "      li.appendChild(iw);\n"
+    "      var sp = document.createElement('span'); sp.textContent = text; li.appendChild(sp);\n"
+    "      var sc = document.createElement('div'); sc.className = 'short-cut';\n"
+    "      var s2 = document.createElement('span'); s2.textContent = cut || ''; sc.appendChild(s2);\n"
+    "      li.appendChild(sc);\n"
+    "      return li;\n"
+    "    }\n"
+    "    ul.appendChild(mk('duplicate', 'chongfu', 'S+C'));\n"
+    "    var ti = mk('turnInto', 'zhuanhuan', '');\n"
+    "    var sm = document.createElement('div'); sm.className = 'submenu';\n"
+    "    var sul = document.createElement('ul');\n"
+    "    sul.appendChild(mk('paragraph', 'duanluo', ''));\n"
+    "    sul.appendChild(mk('heading-1', 'biaoti1', ''));\n"
+    "    sul.appendChild(mk('quote-block', 'yinyong', ''));\n"
+    "    sm.appendChild(sul); ti.appendChild(sm);\n"
+    "    ul.appendChild(ti);\n"
+    "    ul.appendChild(mk('new', 'xinjian', 'S+N'));\n"
+    "    ul.appendChild(mk('delete', 'shanchu', 'S+D'));\n"
+    "    inner.appendChild(ul); menu.appendChild(inner); wrap.appendChild(menu);\n"
+    "    document.body.appendChild(wrap);\n"
+    "    function q(sel){ var e = menu.querySelector(sel); return e ? getComputedStyle(e) : null; }\n"
+    "    var cs = getComputedStyle(ul);\n"
+    "    var r = {};\n"
+    "    r.styleInjected   = hasStyle;\n"
+    "    r.ulFlexDir       = cs.flexDirection;\n"
+    "    r.turnIntoDisplay = q('li.turnInto') ? q('li.turnInto').display : 'null';\n"
+    "    r.submenuDisplay  = q('.submenu') ? q('.submenu').display : 'null';\n"
+    "    r.submenuUlDisplay= q('.submenu ul') ? q('.submenu ul').display : 'null';\n"
+    "    r.headingDisplay  = q('li.heading-1') ? q('li.heading-1').display : 'null';\n"
+    "    r.headingOrder    = q('li.heading-1') ? q('li.heading-1').order : 'null';\n"
+    "    r.dupOrder        = q('li.duplicate') ? q('li.duplicate').order : 'null';\n"
+    "    r.newOrder        = q('li.new') ? q('li.new').order : 'null';\n"
+    "    r.delOrder        = q('li.delete') ? q('li.delete').order : 'null';\n"
+    "    r.spanDisplay     = q('li.duplicate > span') ? q('li.duplicate > span').display : 'null';\n"
+    "    r.delBorderRight  = q('li.delete') ? q('li.delete').borderRightWidth : 'null';\n"
+    "    r.menuWidth       = getComputedStyle(menu).width;\n"
+    "    r.menuMaxWidth    = getComputedStyle(menu).maxWidth;\n"
+    "    r.boxTransparent  = getComputedStyle(wrap).backgroundColor;\n"
+    "    wrap.remove();\n"
+    "    return JSON.stringify(r);\n"
+    "  }catch(e){ return 'FRONTBAR-ERR: ' + e.message; }\n"
+    "})()"
+;
+
+
 MarkTextBridge::~MarkTextBridge() = default;
 
 void MarkTextBridge::setPostJson(const PostJsonFn &fnPost)
@@ -443,7 +509,34 @@ void MarkTextBridge::prepareInjection(WebView2Host *pHost)
         qWarning("MarkTextBridge: 读取 preload/index.js 失败");
     }
 
-    // ④ （可选）页面内编辑链路自检：设 QTMT_SELFTEST=1 才注入
+    // ④ 注入本工程的 UI 调整补丁
+    //    段落前那个按钮点开的竖向弹出菜单 -> 横向悬浮工具栏。
+    //    走注入而不是改官方 bundle：与 env.js 同一机制，
+    //    官方文件（index-B-PE276Q.js / index-Bc-qQhaX.css）保持零改动。
+    QFile fileUiTweaks(m_sWebUiDir + QStringLiteral("/ui-frontmenu-bar.js"));
+    if (fileUiTweaks.open(QIODevice::ReadOnly)) {
+        pHost->addInitScript(QString::fromUtf8(fileUiTweaks.readAll()));
+        fileUiTweaks.close();
+    } else {
+        qWarning("MarkTextBridge: 读取 ui-frontmenu-bar.js 失败");
+    }
+
+    // ⑤ （可选）段落前悬浮工具栏的功能自检：QTMT_CHECK_FRONTBAR=1
+    //    沙箱抓不到 WebView2 画面，故用「造 DOM + 读计算样式」代替截图。
+    if (!qEnvironmentVariable("QTMT_CHECK_FRONTBAR").isEmpty()) {
+        QTimer::singleShot(9000, this, [this]() {
+            if (m_pHost == nullptr) {
+                qInfo("[前栏自检] 宿主未就绪");
+                return;
+            }
+            m_fnScriptDone = [](const QString &sRet) {
+                qInfo("[前栏自检] %s", qPrintable(sRet));
+            };
+            m_pHost->executeScript(QLatin1String(kFrontBarCheckScript));
+        });
+    }
+
+    // ⑤ （可选）页面内编辑链路自检：设 QTMT_SELFTEST=1 才注入
     if (!qEnvironmentVariable("QTMT_SELFTEST").isEmpty()) {
         pHost->addInitScript(QLatin1String(kSelfTestScript));
         qInfo("MarkTextBridge: 已注入页面自检脚本（QTMT_SELFTEST）");
