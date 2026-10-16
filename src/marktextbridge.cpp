@@ -509,16 +509,22 @@ void MarkTextBridge::prepareInjection(WebView2Host *pHost)
         qWarning("MarkTextBridge: 读取 preload/index.js 失败");
     }
 
-    // ④ 注入本工程的 UI 调整补丁
-    //    段落前那个按钮点开的竖向弹出菜单 -> 横向悬浮工具栏。
-    //    走注入而不是改官方 bundle：与 env.js 同一机制，
-    //    官方文件（index-B-PE276Q.js / index-Bc-qQhaX.css）保持零改动。
-    QFile fileUiTweaks(m_sWebUiDir + QStringLiteral("/ui-frontmenu-bar.js"));
-    if (fileUiTweaks.open(QIODevice::ReadOnly)) {
-        pHost->addInitScript(QString::fromUtf8(fileUiTweaks.readAll()));
-        fileUiTweaks.close();
-    } else {
-        qWarning("MarkTextBridge: 读取 ui-frontmenu-bar.js 失败");
+    // ④ （可选）段落前面板的 UI 补丁：**默认不注入**
+    //    设 QTMT_FRONTBAR=1 才注入，把"点段落前按钮弹出的竖向菜单"
+    //    换成"带文字与图标的按钮面板"。
+    //    默认关闭是有意为之：程序默认就是官方原样菜单，
+    //    面板想关掉只要不设该变量即可。
+    //    走注入而不是改官方 bundle（与 env.js 同一机制），
+    //    官方 index-B-PE276Q.js / index-Bc-qQhaX.css 保持零改动。
+    if (qEnvironmentVariable("QTMT_FRONTBAR") == QLatin1String("1")) {
+        QFile fileUiTweaks(m_sWebUiDir + QStringLiteral("/ui-frontmenu-bar.js"));
+        if (fileUiTweaks.open(QIODevice::ReadOnly)) {
+            pHost->addInitScript(QString::fromUtf8(fileUiTweaks.readAll()));
+            fileUiTweaks.close();
+            qInfo("[UI 补丁] 已注入 ui-frontmenu-bar.js（段落前面板）");
+        } else {
+            qWarning("MarkTextBridge: 读取 ui-frontmenu-bar.js 失败");
+        }
     }
 
     // ⑤ （可选）段落前悬浮工具栏的功能自检：QTMT_CHECK_FRONTBAR=1

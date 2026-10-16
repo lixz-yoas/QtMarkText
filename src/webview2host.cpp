@@ -129,6 +129,23 @@ public:
                   L" --disable-features=OptimizationHints,OptimizationGuideModelDownloading,"
                   L"MediaRouter,Translate,InterestFeedContentSuggestions,SegmentationPlatform")
     {
+        // 调试用：环境变量 QTMT_WEBVIEW2_ARGS 可追加 Chromium 参数。
+        // 生产环境不设该变量时行为完全不变（仅多一次 getenv）。
+        // 用途：在无头/受限环境里排查渲染进程崩溃，例如
+        //   QTMT_WEBVIEW2_ARGS="--no-sandbox --disable-gpu --single-process"
+        {
+            const QByteArray aExtra = qgetenv("QTMT_WEBVIEW2_ARGS");
+            if (!aExtra.isEmpty()) {
+                const std::wstring sExtra =
+                        QString::fromLocal8Bit(aExtra).trimmed().toStdWString();
+                if (!sExtra.empty()) {
+                    m_sArgs += L" ";
+                    m_sArgs += sExtra;
+                    qInfo("[WebView2] 追加调试参数: %s",
+                          qPrintable(QString::fromStdWString(sExtra)));
+                }
+            }
+        }
     }
 
     const IID &iidOfInterface() const override
