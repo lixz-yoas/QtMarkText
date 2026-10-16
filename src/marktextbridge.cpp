@@ -527,6 +527,31 @@ void MarkTextBridge::prepareInjection(WebView2Host *pHost)
         }
     }
 
+    // ⑤b （调试）QTMT_EVAL=<js 文件绝对路径>：渲染层就绪后执行该脚本并记日志。
+    //     界面类改动没法单测时，用它现场驱动页面（点按钮 / 读 DOM / 查样式），
+    //     再配合截图定位问题。生产不设该变量则不生效。
+    if (!qEnvironmentVariable("QTMT_EVAL").isEmpty()) {
+        const QString sEvalFile = qEnvironmentVariable("QTMT_EVAL");
+        QTimer::singleShot(9000, this, [this, sEvalFile]() {
+            if (m_pHost == nullptr) {
+                qInfo("[EVAL] 宿主未就绪");
+                return;
+            }
+            QFile fileJs(sEvalFile);
+            if (!fileJs.open(QIODevice::ReadOnly)) {
+                qInfo("[EVAL] 读取失败: %s", qPrintable(sEvalFile));
+                return;
+            }
+            const QString sJs = QString::fromUtf8(fileJs.readAll());
+            fileJs.close();
+            qInfo("[EVAL] 执行 %s (%d 字符)", qPrintable(sEvalFile), sJs.size());
+            m_fnScriptDone = [](const QString &sRet) {
+                qInfo("[EVAL] 返回: %s", qPrintable(sRet));
+            };
+            m_pHost->executeScript(sJs);
+        });
+    }
+
     // ⑤ （可选）段落前悬浮工具栏的功能自检：QTMT_CHECK_FRONTBAR=1
     //    沙箱抓不到 WebView2 画面，故用「造 DOM + 读计算样式」代替截图。
     if (!qEnvironmentVariable("QTMT_CHECK_FRONTBAR").isEmpty()) {
