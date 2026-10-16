@@ -145,6 +145,9 @@ private:
     /// 而它只在启动时从 URL 的 theme= 参数读一次；外壳换主题若不广播，
     /// 编辑区就得重启才换肤 —— 用户反馈的"改了回不去"正是这个原因。
     void pushThemeToRenderer();
+
+    /// 渲染层就绪后按记忆下发「段落工具面板」的开关状态
+    void pushFrontMenuPanel();
     /// 深色主题下给菜单栏与弹出菜单上色（黑底白字）；
     /// 浅色主题清空 QSS，还原系统默认观感。
     void applyMenuBarStyle(bool bDark);

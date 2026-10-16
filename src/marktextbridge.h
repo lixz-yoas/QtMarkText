@@ -106,6 +106,11 @@ public:
     void clickExportDialogLater();
 
     void exportHtml();
+
+    /// 开关「段落工具面板」——段落前那个按钮点开后显示的面板。
+    /// 由「视图 → 段落工具面板」菜单调用；补丁在渲染层里惰性加载，故可实时开关。
+    /// 渲染层未就绪时返回 false。
+    bool setFrontMenuPanelEnabled(bool bOn);
     /// 导出为 PDF（type = "pdf"）
     void exportPdf();
     /// 打印（type = "print"）

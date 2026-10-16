@@ -509,22 +509,37 @@ void MarkTextBridge::prepareInjection(WebView2Host *pHost)
         qWarning("MarkTextBridge: 读取 preload/index.js 失败");
     }
 
-    // ④ （可选）段落前面板的 UI 补丁：**默认不注入**
-    //    设 QTMT_FRONTBAR=1 才注入，把"点段落前按钮弹出的竖向菜单"
-    //    换成"带文字与图标的按钮面板"。
-    //    默认关闭是有意为之：程序默认就是官方原样菜单，
-    //    面板想关掉只要不设该变量即可。
+    // ④ 注入 UI 调整补丁（段落前面板）。
+    //    ★ 补丁本体是**惰性**的：加载后什么都不做，官方菜单 100% 原样；
+    //      只有「视图 → 段落工具面板」勾选后才生效。故这里**无条件注入** ——
+    //      这样菜单勾选可以实时开关，不必重启。
+    //    （早前这里套过一个 QTMT_FRONTBAR=1 的开关，已去掉；正是它导致
+    //      "视图菜单点了没反应" —— 不设那个变量时补丁压根没注入。）
     //    走注入而不是改官方 bundle（与 env.js 同一机制），
     //    官方 index-B-PE276Q.js / index-Bc-qQhaX.css 保持零改动。
-    if (qEnvironmentVariable("QTMT_FRONTBAR") == QLatin1String("1")) {
+    {
         QFile fileUiTweaks(m_sWebUiDir + QStringLiteral("/ui-frontmenu-bar.js"));
         if (fileUiTweaks.open(QIODevice::ReadOnly)) {
-            pHost->addInitScript(QString::fromUtf8(fileUiTweaks.readAll()));
+            const QByteArray aUiTweaks = fileUiTweaks.readAll();
             fileUiTweaks.close();
-            qInfo("[UI 补丁] 已注入 ui-frontmenu-bar.js（段落前面板）");
+            pHost->addInitScript(QString::fromUtf8(aUiTweaks));
+            // 留痕：注入成功与否过去完全没有日志，正是这一点让
+            // "补丁没被注入" 藏了很久。
+            qInfo("[UI 补丁] 已注入 ui-frontmenu-bar.js（%d 字节，默认惰性）",
+                  static_cast<int>(aUiTweaks.size()));
         } else {
-            qWarning("MarkTextBridge: 读取 ui-frontmenu-bar.js 失败");
+            qWarning("MarkTextBridge: 读取 ui-frontmenu-bar.js 失败（段落面板补丁不可用）");
         }
+    }
+
+    // ⑤a （调试）QTMT_FRONTBAR_TEST=1：启动 9 秒后直接下发一次「显示」，
+    //     不依赖菜单点击、也不依赖 rendererReady —— 用来单独验证
+    //     Qt→渲染层 的 mt::frontbar-set 通道通不通。
+    if (!qEnvironmentVariable("QTMT_FRONTBAR_TEST").isEmpty()) {
+        QTimer::singleShot(9000, this, [this]() {
+            qInfo("[面板] 测试触发：直接下发「显示」");
+            setFrontMenuPanelEnabled(true);
+        });
     }
 
     // ⑤b （调试）QTMT_EVAL=<js 文件绝对路径>：渲染层就绪后执行该脚本并记日志。
@@ -2306,6 +2321,24 @@ void MarkTextBridge::handleResponseForExport(const QJsonObject &objPayload)
                        { QStringLiteral("type"), sType },
                        { QStringLiteral("filePath"), sTarget } } });
 }
+
+bool MarkTextBridge::setFrontMenuPanelEnabled(bool bOn)
+{
+    if (m_pHost == nullptr) {
+        return false;
+    }
+    // ★ 走 mt:: 消息通道，不用 executeScript ★
+    //   实测 WebView2Host::executeScript 在本环境里结果恒为 null、
+    //   脚本似乎并未执行（连 String(typeof x) 都返回 null），用它做开关会点了没反应。
+    //   而 mt:: 通道是已验证可用的：emitToRenderer → postJson →
+    //   chrome.webview 的 message 事件 → env.js 分发给 ipcRenderer 监听者
+    //   （mt::show-export-dialog 就是这么工作的）。
+    //   补丁侧监听 window.electron.ipcRenderer.on("mt::frontbar-set", ...)。
+    qInfo("[面板] 请求渲染层%s「段落工具面板」", bOn ? "显示" : "隐藏");
+    emitToRenderer(QStringLiteral("mt::frontbar-set"), QJsonArray{ bOn });
+    return true;
+}
+
 
 void MarkTextBridge::exportHtmlForSelfTest(const QString &sPath)
 {

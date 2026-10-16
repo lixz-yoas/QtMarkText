@@ -811,6 +811,11 @@ void MarkTextMenu::buildViewMenu(QMenuBar *pBar)
     addCommand(pMenu, QStringLiteral("reloadImagesMenuItem"), QStringLiteral("重新加载图片"), QStringLiteral("F5"));               // view.reload-images
     addSeparator(pMenu);
 
+    // 本工程新增的 UI 改造：把"段落前那个按钮点开弹出的菜单"换成
+    // 「图标 + 文字的按钮面板」。补丁在渲染层里惰性加载，此项实时开关。
+    addCommand(pMenu, QStringLiteral("frontMenuPanelMenuItem"), QStringLiteral("段落工具面板"), QString(), true);
+    addSeparator(pMenu);
+
     addCommand(pMenu, QStringLiteral("showDeveloperToolsMenuItem"), QStringLiteral("显示开发者工具"), QStringLiteral("Ctrl+Alt+I")); // view.toggle-dev-tools
     addCommand(pMenu, QStringLiteral("reloadWindowMenuItem"),       QStringLiteral("重新加载窗口"),   QStringLiteral("Ctrl+F5"));    // view.dev-reload
 }

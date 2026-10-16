@@ -1,70 +1,67 @@
 /*
- * ui-frontmenu-bar.js —— 段落前「文字按钮面板」补丁（不改官方文件）
+ * ui-frontmenu-bar.js —— 段落前「文字按钮面板」（可实时开关，不改官方文件）
  *
  * ══════════════════════════════════════════════════════════════════
- *  需求（按用户给的示意图）
+ *  设计要点
  * ══════════════════════════════════════════════════════════════════
- *   1) 点段落前那个按钮时**不再弹菜单**，改为弹出一个**面板**；
- *   2) 面板里是**带文字（并带图标）的圆角按钮**，按顺序排列、放不下自动换行；
- *   3) 顺序：**一级项在前，二级项依次在后**（一级项用主题色边框加以区分）；
- *   4) 鼠标移上去提示**快捷键**；
- *   5) 面板**不遮挡当前光标**；
- *   6) 面板**不超出软件窗口**。
- *
- *  示意图里的按钮（文字按钮，圆角，描边）：
- *      创建副本 | 删除整段 | 段落 | 标题1 | 标题2 | 标题3 | 标题4
- *      标题5 | 数学公式 | HTML块 | 代码块 | 有序列表 | 无序列表 | 任务列表
- *      Vega-Lite图 | 流程图 | 时序图 | PlantUML图 | Mermaid图
- *  注：示意图没画图标，按要求"带上图标"。
+ *  1) **默认完全惰性**：本脚本加载后什么都不做 ——
+ *     不注入样式、不改 DOM、不起观察器。官方菜单保持 100% 原样。
+ *  2) 由「视图 → 段落工具面板」菜单勾选项实时开关，走
+ *     window.__QTMT_FRONTBAR__.set(true|false)。
+ *  3) **所有样式都限定在 `html.qtmt-frontbar-on` 之下** ——
+ *     关闭时连同该 class 一起摘掉，官方菜单立刻恢复原样，
+ *     绝不会出现"补丁半生效把官方菜单改坏"的状态。
+ *  4) 开启时才镜像面板；镜像面板里的按钮点击**转发给官方 li**，
+ *     故「点击切换该段格式」始终是官方行为。
  *
  * ══════════════════════════════════════════════════════════════════
- *  做法：官方 DOM 原样保留（逻辑一行不改）→ 隐藏 → 旁边镜像出面板
+ *  面板内容（取自官方 DOM，零硬编码）
  * ══════════════════════════════════════════════════════════════════
- *   面板里每个按钮的点击**转发给官方对应的 li**（li.click()），
- *   于是"点击切换该段格式"仍是官方行为，补丁不碰任何格式逻辑。
+ *  第一行/前段：一级项（创建副本 / 新段落 / 删除）
+ *  其后      ：二级项（段落 / 标题 1-6 / 数学公式 / HTML 块 / 代码块 /
+ *             列表 / 任务列表 / 各图表 …，随段落类型由官方过滤决定）
+ *  按钮 = 图标 + 文字；悬停提示文字与快捷键。
  *
- *   文字与顺序**全部取自官方 DOM**（官方 li 里的 span / 快捷键 / 图标），
- *   没有任何硬编码 —— 语言切换、菜单项增减都会自动跟上。
- *
- *   为什么不会被官方重渲染冲掉：官方每次打开都
- *   `patch(frontMenuContainer, vnode2)`，但它只 patch **那个内层 div 的子树**；
- *   本面板挂在 `.ag-front-menu` 容器上、是该 div 的**兄弟**，不在 patch 范围内。
- *
- * ══════════════════════════════════════════════════════════════════
- *  默认关闭，用环境变量开启
- * ══════════════════════════════════════════════════════════════════
- *   Qt 侧只在 QTMT_FRONTBAR=1 时才注入本脚本；
- *   不设（默认）则完全不注入，程序就是**官方原样的菜单**。
- *   另：即使注入后本脚本出错，官方菜单也只是"没被隐藏"，
- *       仍可正常使用（见 buildPanel 的「先建后藏」）。
+ *  实现方式：官方 DOM 原样保留、逻辑一行不改，只隐藏 → 旁边镜像面板。
+ *  镜像面板挂在 .ag-front-menu 容器上，是官方 frontMenuContainer 的**兄弟**，
+ *  故不受官方 patch(frontMenuContainer, ...) 重渲染影响。
  */
 (function () {
   'use strict';
 
+  /* 已初始化过就不重复注册（页面可能被重载） */
+  if (window.__QTMT_FRONTBAR__) {
+    return;
+  }
+
   var STYLE_ID = 'qtmt-frontmenu-bar-style';
+  var ON_CLASS = 'qtmt-frontbar-on';        // 挂在 <html> 上，所有补丁样式的总开关
   var BOX_CLASS = 'qtmt-frontbar-box';
   var PANEL_CLASS = 'qtmt-panel';
   var MIRROR_ATTR = 'data-qtmt-mirrored';
   var ORIGIN_ATTR = 'data-qtmt-origin';
 
-  /* ── 可调参数（实机看着不合适就改这几个数）────────────────── */
+  /* ── 可调参数 ────────────────────────────────────────────── */
   var GAP_ABOVE = 30;    // 面板下沿与「当前行」上沿的间距（px）
   var GAP_BELOW = 30;    // 上方空间不足、改放下方时与当前行下沿的间距（px）
   var EDGE = 8;          // 距窗口边缘的安全边距（px）
-  var MAX_WIDTH = 680;   // 面板最大宽度（px）—— 窄了会多换行，宽了会横跨窗口
+  var MAX_WIDTH = 680;   // 面板最大宽度（px）
   /* ────────────────────────────────────────────────────────── */
 
+  // 所有选择器都以 `html.<ON_CLASS>` 开头 —— 这是"关掉即恢复"的关键。
+  var P = 'html.' + ON_CLASS + ' ';
+
   var CSS = [
-    /* ---- 1. 外层浮层盒：背景与阴影交给面板，自身不绘制 ---- */
-    '.' + BOX_CLASS + ' {',
+    /* 1. 外层浮层盒：背景与阴影交给面板，自身不绘制 */
+    P + '.' + BOX_CLASS + ' {',
     '  background: transparent !important;',
     '  box-shadow: none !important;',
     '  border: none !important;',
     '  border-radius: 0 !important;',
     '}',
 
-    /* ---- 2. 容器 = 面板本体 ---- */
-    '.ag-front-menu {',
+    /* 2. 容器 = 面板本体 */
+    P + '.ag-front-menu {',
     '  width: auto !important;',
     '  max-width: min(' + MAX_WIDTH + 'px, calc(100vw - ' + (EDGE * 2) + 'px)) !important;',
     '  max-height: calc(100vh - ' + (EDGE * 2) + 'px) !important;',
@@ -75,26 +72,25 @@
     '  border-radius: 8px !important;',
     '  box-shadow: var(--floatShadow) !important;',
     '  padding: 7px 8px !important;',
-    '  /* 位移由 JS 写 --qtmt-tx / --qtmt-ty（横向夹取 + 纵向上/下）*/',
     '  transform: translate(var(--qtmt-tx, 0px), var(--qtmt-ty, 0px)) !important;',
     '}',
 
-    /* ---- 3. 官方原菜单：只隐藏，不动它 ----
-     *  ★ 必须精确到「官方那个 div」★
-     *  镜像面板 .qtmt-panel 也是容器的直接子 div，
-     *  若写成 `.ag-front-menu > div` 会把面板自己也藏掉（r192 就是这么错的）。
-     *  故按 data-qtmt-origin 标记隐藏；JS 侧另置 inline display:none 兜底。 */
-    '.ag-front-menu[' + MIRROR_ATTR + '] > [' + ORIGIN_ATTR + '] { display: none !important; }',
+    /* 3. 官方原菜单：只隐藏，不动它。
+     *  ★ 必须精确到「官方那个 div」—— 镜像面板也是容器的子 div，
+     *    写成 `> div` 会把面板自己也藏掉（r192 就是这么错的）。 */
+    P + '.ag-front-menu[' + MIRROR_ATTR + '] > [' + ORIGIN_ATTR + '] {',
+    '  display: none !important;',
+    '}',
 
-    /* ---- 4. 面板：文字按钮自动换行 ---- */
-    '.' + PANEL_CLASS + ' {',
+    /* 4. 面板：文字按钮自动换行 */
+    P + '.' + PANEL_CLASS + ' {',
     '  display: flex;',
     '  flex-direction: row;',
     '  flex-wrap: wrap;',
     '  align-items: center;',
     '  gap: 6px;',
     '}',
-    '.' + PANEL_CLASS + ' .qtmt-btn {',
+    P + '.' + PANEL_CLASS + ' .qtmt-btn {',
     '  display: inline-flex;',
     '  align-items: center;',
     '  gap: 5px;',
@@ -112,32 +108,32 @@
     '  cursor: pointer;',
     '  flex: 0 0 auto;',
     '}',
-    '.' + PANEL_CLASS + ' .qtmt-btn:hover {',
+    P + '.' + PANEL_CLASS + ' .qtmt-btn:hover {',
     '  background: var(--floatHoverColor);',
     '  border-color: var(--themeColor);',
     '}',
-    /* 一级项用主题色描边区分（示意图里前两项是不同颜色） */
-    '.' + PANEL_CLASS + ' .qtmt-btn.qtmt-l1 { border-color: var(--themeColor); }',
-    /* 删除段落用删除色 */
-    '.' + PANEL_CLASS + ' .qtmt-btn.qtmt-del { color: var(--deleteColor); }',
-    '.' + PANEL_CLASS + ' .qtmt-btn.qtmt-del .icon-wrapper { color: var(--deleteColor); }',
+    /* 一级项用主题色描边区分 */
+    P + '.' + PANEL_CLASS + ' .qtmt-btn.qtmt-l1 { border-color: var(--themeColor); }',
+    /* 删除项用删除色 */
+    P + '.' + PANEL_CLASS + ' .qtmt-btn.qtmt-del { color: var(--deleteColor); }',
+    P + '.' + PANEL_CLASS + ' .qtmt-btn.qtmt-del .icon-wrapper { color: var(--deleteColor); }',
 
-    /* 图标：复刻官方 .icon-wrapper 的着色手法（clone 过来的是原样结构）*/
-    '.' + PANEL_CLASS + ' .qtmt-btn .icon-wrapper {',
+    /* 图标：复刻官方 .icon-wrapper 的着色手法 */
+    P + '.' + PANEL_CLASS + ' .qtmt-btn .icon-wrapper {',
     '  display: flex;',
     '  width: 15px;',
     '  height: 15px;',
     '  color: var(--iconColor);',
     '  flex: 0 0 auto;',
     '}',
-    '.' + PANEL_CLASS + ' .qtmt-btn .icon-wrapper i.icon {',
+    P + '.' + PANEL_CLASS + ' .qtmt-btn .icon-wrapper i.icon {',
     '  display: flex;',
     '  position: relative;',
     '  width: 15px;',
     '  height: 15px;',
     '  overflow: hidden;',
     '}',
-    '.' + PANEL_CLASS + ' .qtmt-btn .icon-wrapper i.icon > i[class^=icon-] {',
+    P + '.' + PANEL_CLASS + ' .qtmt-btn .icon-wrapper i.icon > i[class^=icon-] {',
     '  display: inline-block;',
     '  width: 100%;',
     '  height: 100%;',
@@ -146,8 +142,8 @@
     '  left: -15px;',
     '}',
 
-    /* ---- 5. 悬停提示：文字 + 快捷键 ---- */
-    '.' + PANEL_CLASS + ' .qtmt-btn[data-tip]:hover::after {',
+    /* 5. 悬停提示：文字 + 快捷键 */
+    P + '.' + PANEL_CLASS + ' .qtmt-btn[data-tip]:hover::after {',
     '  content: attr(data-tip);',
     '  position: absolute;',
     '  left: 0;',
@@ -165,8 +161,12 @@
     '}'
   ].join('\n');
 
+  var enabled = false;
+  var observer = null;
+  var scheduled = false;
+
   /* ================================================================
-   *  工具
+   *  样式注入 / 移除
    * ================================================================ */
 
   function injectStyle() {
@@ -179,7 +179,17 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  /** 取某项的文字与快捷键（官方 DOM：> span / > .short-cut span） */
+  function removeStyle() {
+    var el = document.getElementById(STYLE_ID);
+    if (el && el.parentNode) {
+      el.parentNode.removeChild(el);
+    }
+  }
+
+  /* ================================================================
+   *  工具
+   * ================================================================ */
+
   function labelOf(li) {
     var sp = li.querySelector(':scope > span');
     var key = li.querySelector(':scope > .short-cut span');
@@ -189,81 +199,7 @@
     };
   }
 
-  /** 一级项 = 顶层 ul 的直接子项（官方在容器里多套了一层 div）*/
-  function topItems(menu) {
-    for (var i = 0; i < menu.children.length; i++) {
-      var c = menu.children[i];
-      if (c.tagName !== 'DIV' || c.classList.contains(PANEL_CLASS)) {
-        continue;
-      }
-      var ul = c.querySelector(':scope > ul');
-      if (!ul) {
-        continue;
-      }
-      var out = [];
-      for (var k = 0; k < ul.children.length; k++) {
-        var li = ul.children[k];
-        if (li.tagName === 'LI' && li.classList.contains('item')) {
-          out.push(li);
-        }
-      }
-      return out;
-    }
-    return [];
-  }
-
-  /** 二级项 = 「转换为」子菜单里的项 */
-  function subItems(menu) {
-    return Array.prototype.slice.call(
-        menu.querySelectorAll('.submenu ul > li.item'));
-  }
-
-  /** 用官方 li 造一个「图标 + 文字」按钮；点击转发给官方 li */
-  function makeButton(li, isLevel1) {
-    var info = labelOf(li);
-    var btn = document.createElement('div');
-    var cls = 'qtmt-btn ' + (isLevel1 ? 'qtmt-l1' : 'qtmt-l2');
-    if (li.classList.contains('delete')) {
-      cls += ' qtmt-del';
-    }
-    btn.className = cls;
-
-    // 悬停提示 = 文字 + 快捷键
-    var tip = info.cut ? (info.text + '  ' + info.cut) : info.text;
-    if (tip) {
-      btn.setAttribute('data-tip', tip);
-    }
-
-    // 图标：直接 clone 官方的 .icon-wrapper（data-URI 图形与官方一致）
-    var iw = li.querySelector('.icon-wrapper');
-    if (iw) {
-      btn.appendChild(iw.cloneNode(true));
-    }
-
-    // 文字
-    var span = document.createElement('span');
-    span.className = 'qtmt-text';
-    span.textContent = info.text;
-    btn.appendChild(span);
-
-    // 不改逻辑：点击直接触发官方 li 的 click 处理器
-    btn.addEventListener('mousedown', function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    });
-    btn.addEventListener('click', function (e) {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        li.click();
-      } catch (err) {
-        /* 转发失败不影响官方菜单本身 */
-      }
-    });
-    return btn;
-  }
-
-  /** 取容器里「官方那个 div」（frontMenuContainer）= 除镜像面板外的那个 div */
+  /** 官方那个 div（frontMenuContainer）= 除镜像面板外的那个 div */
   function originContainer(menu) {
     for (var i = 0; i < menu.children.length; i++) {
       var c = menu.children[i];
@@ -274,53 +210,131 @@
     return null;
   }
 
-  /** 重建镜像面板 */
+  /** 一级项 = 顶层 ul 的直接子项 */
+  function topItems(menu) {
+    var origin = originContainer(menu);
+    if (!origin) {
+      return [];
+    }
+    var ul = origin.querySelector(':scope > ul');
+    if (!ul) {
+      return [];
+    }
+    var out = [];
+    for (var k = 0; k < ul.children.length; k++) {
+      var li = ul.children[k];
+      if (li.tagName === 'LI' && li.classList.contains('item')) {
+        out.push(li);
+      }
+    }
+    return out;
+  }
+
+  /** 二级项 = 「转换为」子菜单里的项（官方按段落类型过滤后的那一份）*/
+  function subItems(menu) {
+    return Array.prototype.slice.call(menu.querySelectorAll('.submenu ul > li.item'));
+  }
+
+  function makeButton(li, isLevel1) {
+    var info = labelOf(li);
+    var btn = document.createElement('div');
+    var cls = 'qtmt-btn ' + (isLevel1 ? 'qtmt-l1' : 'qtmt-l2');
+    if (li.classList.contains('delete')) {
+      cls += ' qtmt-del';
+    }
+    btn.className = cls;
+
+    var tip = info.cut ? (info.text + '  ' + info.cut) : info.text;
+    if (tip) {
+      btn.setAttribute('data-tip', tip);
+    }
+
+    var iw = li.querySelector('.icon-wrapper');
+    if (iw) {
+      btn.appendChild(iw.cloneNode(true));
+    }
+
+    var span = document.createElement('span');
+    span.className = 'qtmt-text';
+    span.textContent = info.text;
+    btn.appendChild(span);
+
+    btn.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        li.click();          // 交给官方处理器 —— 补丁不碰格式逻辑
+      } catch (err) {
+        /* 转发失败不影响官方菜单 */
+      }
+    });
+    return btn;
+  }
+
+  /* ================================================================
+   *  构建 / 还原
+   * ================================================================ */
+
   function buildPanel(menu) {
     var tops = topItems(menu);
     if (tops.length === 0) {
-      return;   // 官方还没渲染出内容（尚未打开过），先不动
+      return false;   // 官方还没渲染出内容（尚未打开过）
     }
 
     var panel = menu.querySelector(':scope > .' + PANEL_CLASS);
     if (!panel) {
       panel = document.createElement('div');
       panel.className = PANEL_CLASS;
-      // 挂在容器上（与官方 frontMenuContainer 平级），
-      // 故不受官方 patch(frontMenuContainer, ...) 影响
       menu.appendChild(panel);
     }
     while (panel.firstChild) {
       panel.removeChild(panel.firstChild);
     }
 
-    // ---- 一级项在前 ----
-    // 「转换为」原本唯一的作用就是展开子菜单，而子菜单已平铺到本面板里，
-    // 故不把它做成按钮（点了不会有反应），它的内容都在二级项里。
+    // 一级项在前（「转换为」不作按钮：它唯一作用是展开子菜单，
+    // 而子菜单已铺进本面板，留着就是点了没反应的死按钮）
     for (var i = 0; i < tops.length; i++) {
       if (tops[i].classList.contains('turnInto')) {
         continue;
       }
       panel.appendChild(makeButton(tops[i], true));
     }
-
-    // ---- 二级项依次在后 ----
+    // 二级项依次在后
     var subs = subItems(menu);
     for (var k = 0; k < subs.length; k++) {
       panel.appendChild(makeButton(subs[k], false));
     }
+    if (!panel.firstChild) {
+      return false;
+    }
 
-    // ---- 面板建好之后，才隐藏官方原菜单 ----
-    // ★ 先建后藏：若建面板途中抛异常，官方菜单仍可见可用，
-    //   不会出现"两边都没了"。
-    if (panel.firstChild) {
-      menu.setAttribute(MIRROR_ATTR, '1');
-      var origin = originContainer(menu);
-      if (origin) {
-        origin.setAttribute(ORIGIN_ATTR, '1');
-        if (origin.style.display !== 'none') {
-          origin.style.display = 'none';
-        }
+    // 面板建好之后才隐藏官方（先建后藏：任何失败都不至于两边都没了）
+    menu.setAttribute(MIRROR_ATTR, '1');
+    var origin = originContainer(menu);
+    if (origin) {
+      origin.setAttribute(ORIGIN_ATTR, '1');
+      if (origin.style.display !== 'none') {
+        origin.style.display = 'none';
       }
+    }
+    return true;
+  }
+
+  /** 把某个菜单还原成官方原样 */
+  function restoreMenu(menu) {
+    var panel = menu.querySelector(':scope > .' + PANEL_CLASS);
+    if (panel && panel.parentNode) {
+      panel.parentNode.removeChild(panel);
+    }
+    menu.removeAttribute(MIRROR_ATTR);
+    var origin = menu.querySelector(':scope > [' + ORIGIN_ATTR + ']');
+    if (origin) {
+      origin.removeAttribute(ORIGIN_ATTR);
+      origin.style.display = '';      // 交还给官方样式
     }
   }
 
@@ -329,15 +343,15 @@
    * ================================================================ */
 
   function place(menu) {
-    var box = menu.parentNode;                  // .ag-float-wrapper
+    var box = menu.parentNode;                 // .ag-float-wrapper
     if (!box || !box.getBoundingClientRect) {
       return;
     }
     var boxRect = box.getBoundingClientRect();
 
-    // ★ 浮层未定位时官方给了 top:-1000 / right:-1000（见 .ag-float-wrapper 默认值）。
-    //   此时量不到真实位置，硬算会把面板推飞 —— 直接跳过，等 popper 定位后再算
-    //   （popper 会改 wrapper 的 inline style，会再次触发本函数）。
+    // ★ 浮层未定位时官方给的是 top:-1000px / right:-1000px，
+    //   此时量不到真实位置，硬算会把面板推飞出屏 —— 直接跳过，
+    //   等 popper 改了 wrapper 的 inline style（会再次触发本函数）再算。
     if (boxRect.top < 0 || boxRect.left < 0
         || boxRect.width <= 0 || boxRect.height <= 0) {
       return;
@@ -346,12 +360,10 @@
     var menuH = menu.offsetHeight || 0;
     var menuW = menu.offsetWidth || 0;
 
-    // 纵向：默认整块上移到当前行之上；上方不够就改放下方
     var ty = (boxRect.top - menuH - GAP_ABOVE >= EDGE)
              ? -(menuH + GAP_ABOVE)
              : GAP_BELOW;
 
-    // 横向：若会超出窗口左右就往回收
     var tx = 0;
     var winW = document.documentElement.clientWidth;
     if (boxRect.left < EDGE) {
@@ -369,7 +381,9 @@
    * ================================================================ */
 
   function decorate() {
-    injectStyle();
+    if (!enabled) {
+      return;
+    }
     var menus = document.querySelectorAll('.ag-front-menu');
     for (var i = 0; i < menus.length; i++) {
       var menu = menus[i];
@@ -382,9 +396,8 @@
     }
   }
 
-  var scheduled = false;
   function schedule() {
-    if (scheduled) {
+    if (!enabled || scheduled) {
       return;
     }
     scheduled = true;
@@ -402,30 +415,134 @@
     try {
       window.chrome.webview.postMessage({ __mt: 1, kind: 'log', level: 'info', text: text });
     } catch (e) {
-      /* 非 WebView2 环境（如浏览器预览）忽略 */
+      /* 非 WebView2 环境忽略 */
     }
   }
 
-  function boot() {
-    injectStyle();
-    var target = document.body || document.documentElement;
-    if (!target) {
-      setTimeout(boot, 30);
-      return;
+  /* ================================================================
+   *  对外 API（由「视图 → 段落工具面板」菜单调用）
+   * ================================================================ */
+
+  function setEnabled(on) {
+    on = !!on;
+    if (on === enabled) {
+      return enabled;
     }
-    new MutationObserver(schedule).observe(target, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ['class', 'style']
-    });
-    schedule();
-    notify('FRONTBAR-LOADED: 段落前文字按钮面板已注入');
+    enabled = on;
+
+    var root = document.documentElement;
+    if (on) {
+      injectStyle();
+      if (root.classList) {
+        root.classList.add(ON_CLASS);
+      }
+      if (!observer) {
+        observer = new MutationObserver(schedule);
+      }
+      var target = document.body || root;
+      observer.observe(target, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style']
+      });
+      decorate();
+    } else {
+      if (observer) {
+        observer.disconnect();
+      }
+      // 先还原 DOM，再摘掉总开关 class 与样式表 —— 顺序保证中途不会露出半成品
+      var menus = document.querySelectorAll('.ag-front-menu');
+      for (var i = 0; i < menus.length; i++) {
+        restoreMenu(menus[i]);
+        var box = menus[i].parentNode;
+        if (box && box.classList) {
+          box.classList.remove(BOX_CLASS);
+        }
+        // 清掉补丁写过的位移变量，避免残留
+        menus[i].style.removeProperty('--qtmt-tx');
+        menus[i].style.removeProperty('--qtmt-ty');
+      }
+      if (root.classList) {
+        root.classList.remove(ON_CLASS);
+      }
+      removeStyle();
+    }
+    notify('FRONTBAR-' + (on ? 'ON' : 'OFF'));
+    return enabled;
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
+  window.__QTMT_FRONTBAR__ = {
+    set: setEnabled,
+    toggle: function () { return setEnabled(!enabled); },
+    isOn: function () { return enabled; }
+  };
+
+  // ---- 接 Qt 侧的开关指令（「视图 → 段落工具面板」）----
+  // 走 mt:: 消息通道（env.js 把它分发给 ipcRenderer 监听者）。
+  // 之所以不用 executeScript：实测那条路在本环境里脚本不执行。
+  //
+  // ★ 注册时机要小心 ★
+  //   window.electron 是 preload 通过 contextBridge.exposeInMainWorld 挂上的
+  //   （env.js 的实现就是 `window[key] = value`，同步生效）。
+  //   正常情况下本脚本（第 4 个 init 脚本）跑时它已存在；
+  //   但为稳妥，这里做两件事：
+  //     ① 退路：env.js 早早提供了 globalThis.require('electron')，直接可用；
+  //     ② 轮询重试：都拿不到就每 200ms 试一次，最多 30 秒，并记日志。
+  var ipcHooked = false;
+
+  function getIpc() {
+    try {
+      if (window.electron && window.electron.ipcRenderer
+          && typeof window.electron.ipcRenderer.on === 'function') {
+        return window.electron.ipcRenderer;
+      }
+    } catch (e) { /* 继续试退路 */ }
+    try {
+      var e2 = (typeof globalThis !== 'undefined' && globalThis.require)
+               ? globalThis.require('electron') : null;
+      if (e2 && e2.ipcRenderer && typeof e2.ipcRenderer.on === 'function') {
+        return e2.ipcRenderer;
+      }
+    } catch (e3) { /* 拿不到就返回 null */ }
+    return null;
+  }
+
+  function hookIpc() {
+    if (ipcHooked) {
+      return true;
+    }
+    var ipc = getIpc();
+    if (!ipc) {
+      return false;
+    }
+    try {
+      ipc.on('mt::frontbar-set', function (event, on) {
+        notify('FRONTBAR-CMD:' + (on ? 'on' : 'off'));
+        setEnabled(!!on);
+      });
+      ipcHooked = true;
+      notify('FRONTBAR-HOOKED');
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  notify('FRONTBAR-BOOT electron=' + (typeof window.electron)
+         + ' req=' + (typeof (globalThis.require))
+         + ' chrome=' + (typeof (window.chrome && window.chrome.webview))
+         + ' hooked=' + ipcHooked);
+
+  if (!hookIpc()) {
+    var nTick = 0;
+    var timer = setInterval(function () {
+      if (hookIpc()) {
+        clearInterval(timer);
+      } else if (++nTick > 150) {          // 30 秒后放弃
+        clearInterval(timer);
+        notify('FRONTBAR-NO-HOOK');
+      }
+    }, 200);
   }
 })();

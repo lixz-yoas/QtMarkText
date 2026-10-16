@@ -1272,6 +1272,10 @@ IEditorEngine *MainWindow::addEditorTab()
         // "选中的主题"原值；跟随系统时它不等于生效值，故就绪后再广播一次纠正。
         connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
                 this, &MainWindow::pushThemeToRenderer);
+        // 同上：段落工具面板的开关状态也要在就绪后下发一次
+        //（补丁是惰性的，不主动开启就一直是官方原样菜单）
+        connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
+                this, &MainWindow::pushFrontMenuPanel);
         // 同上，就绪后再恢复"上次打开的文件夹"（渲染层的项目树监听此时才注册好）
         connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
                 this, &MainWindow::restoreLastOpenedFolder);
@@ -2126,6 +2130,22 @@ void MainWindow::onMenuCommand(const QString &sId)
         return;
     }
 
+    // ---------------- 视图：段落工具面板 ----------------
+    // 某段落前那个按钮点开后显示的面板（本工程新增的 UI 改造）。
+    // 补丁在渲染层里惰性加载，故这里是**实时**开关，不需要重启；
+    // 勾选状态持久化到 preference，下次启动按记忆恢复（见 pushFrontMenuPanel）。
+    if (sId == QLatin1String("frontMenuPanelMenuItem")) {
+        QAction *pAction = m_pMenu->actionById(sId);
+        const bool bOn = (pAction != nullptr) && pAction->isChecked();
+        IEditorEngine *pEngine = currentEngine();
+        MarkTextBridge *pBridge = (pEngine != nullptr) ? pEngine->bridge() : nullptr;
+        if (pBridge == nullptr || !pBridge->setFrontMenuPanelEnabled(bOn)) {
+            statusBar()->showMessage(QStringLiteral("段落工具面板：渲染层尚未就绪"), 2500);
+        }
+        m_pStore->setValue(QStringLiteral("frontMenuPanel"), bOn);
+        return;
+    }
+
     // ---------------- 视图：开发者工具 / 重新加载窗口 ----------------
     // 这两项 Electron 侧是 webContents.toggleDevTools() 与整窗重载，
     // 都不经过渲染层 —— WebView2 直接提供对应能力，走引擎即可。
@@ -2265,6 +2285,8 @@ void MainWindow::syncViewMenu()
                             m_pStore->boolValue(QStringLiteral("sideBarVisibility")));
     m_pMenu->setCheckedById(QStringLiteral("tabBarMenuItem"),
                             m_pStore->boolValue(QStringLiteral("tabBarVisibility")));
+    m_pMenu->setCheckedById(QStringLiteral("frontMenuPanelMenuItem"),
+                            m_pStore->boolValue(QStringLiteral("frontMenuPanel")));
 }
 
 void MainWindow::syncThemeMenu()
@@ -2306,6 +2328,22 @@ void MainWindow::pushThemeToRenderer()
     }
     qInfo("[主题] 已广播到渲染层：theme=%s", qPrintable(obj.value(QStringLiteral("theme")).toString()));
 }
+
+void MainWindow::pushFrontMenuPanel()
+{
+    // 补丁在渲染层里惰性加载：不主动开启就是官方原样菜单。
+    // 故每次渲染层就绪后都要按记忆下发一次开关状态。
+    IEditorEngine *pEngine = currentEngine();
+    MarkTextBridge *pBridge = (pEngine != nullptr) ? pEngine->bridge() : nullptr;
+    if (pBridge == nullptr) {
+        return;
+    }
+    const bool bOn = m_pStore->boolValue(QStringLiteral("frontMenuPanel"));
+    if (bOn) {
+        pBridge->setFrontMenuPanelEnabled(true);
+    }
+}
+
 
 void MainWindow::applyShellTheme()
 {
