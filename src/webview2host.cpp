@@ -1142,76 +1142,129 @@ void WebView2Host::executeScript(const QString &sJs)
 }
 
 //=====================================================================
-//  CallDevToolsProtocolMethod 回调（Page.printToPDF）
+//  PDF 导出 / 打印 —— WebView2 原生 API（不是 CDP）
 //
-//  CDP 返回形如 {"result":{"data":"JVBERi0xLjcK..."}}，data 是 base64 的 PDF。
-//=====================================================================
-//  CallDevToolsProtocolMethod 回调（Page.printToPDF）
+//  ★ 这里曾经走 CDP：CallDevToolsProtocolMethod("Page.printToPDF")。
+//    那是绕远路 —— WebView2 自带专门的打印 API：
+//        ICoreWebView2_7::PrintToPdf(文件路径, 打印设置, 回调)
+//    直接把 PDF 写到指定文件，不需要 CDP、不需要 base64 转码、
+//    不需要自己解析 CDP 的 JSON 返回。同为 Chromium 内核渲染，
+//    与 Electron 的 webContents.printToPDF() 同一套底层，故样式保真。
+//    （依据：MS Learn「WebView2 Features and APIs」Printing 一节列出的
+//      CoreWebView2.PrintToPdfAsync / CreatePrintSettings / PrintSettings）
 //
-//  CDP 返回形如 {"result":{"data":"JVBERi0xLjcK..."}}，data 是 base64 的 PDF。
-//  写法对齐上面的 ExecuteScriptHandler —— 用工程既有的 Wv2Callback 基类。
+//  回调签名：Invoke(HRESULT errorCode, BOOL result)
+//  需 ICoreWebView2_7（SDK >= 1.0.1108.44）。
 //=====================================================================
-//  CallDevToolsProtocolMethod 回调（Page.printToPDF）
-//
-//  SDK 里的签名与 ExecuteScriptCompletedHandler 一致：
-//      Invoke(HRESULT errorCode, LPCWSTR result)
-//  result 是 CDP 的 JSON 原文，形如 {"result":{"data":"JVBERi0xLjcK..."}}，
-//  data 是 base64 编码的 PDF。
-//=====================================================================
-class DevToolsCallHandler : public Wv2Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>
+class PrintToPdfHandler : public Wv2Callback<ICoreWebView2PrintToPdfCompletedHandler>
 {
 public:
-    explicit DevToolsCallHandler(WebView2Host::Impl *pImpl) : m_pImpl(pImpl) {}
+    PrintToPdfHandler(WebView2Host::Impl *pImpl, const QString &sOutPath)
+        : m_pImpl(pImpl)
+        , m_sOutPath(sOutPath)
+    {
+    }
 
     const IID &iidOfInterface() const override
     {
-        return IID_ICoreWebView2CallDevToolsProtocolMethodCompletedHandler;
+        return IID_ICoreWebView2PrintToPdfCompletedHandler;
     }
 
-    HRESULT STDMETHODCALLTYPE Invoke(HRESULT hrResult, LPCWSTR pszResult) override
+    HRESULT STDMETHODCALLTYPE Invoke(HRESULT hrResult, BOOL bResult) override
     {
-        QString sBase64;
-        if (SUCCEEDED(hrResult) && pszResult != nullptr) {
-            const QJsonDocument doc =
-                QJsonDocument::fromJson(QString::fromWCharArray(pszResult).toUtf8());
-            const QJsonObject obj = doc.object()
-                    .value(QStringLiteral("result")).toObject();
-            sBase64 = obj.value(QStringLiteral("data")).toString();
-        }
-        emit m_pImpl->pHost->printToPdfFinished(!sBase64.isEmpty(), sBase64);
+        emit m_pImpl->pHost->printToPdfFinished(SUCCEEDED(hrResult) && bResult,
+                                               m_sOutPath);
         return S_OK;
     }
 
 private:
     WebView2Host::Impl *m_pImpl;
+    QString m_sOutPath;
 };
 
-bool WebView2Host::printToPdf(const QString &sParamsJson)
+bool WebView2Host::printToPdf(const QString &sOutPath,
+                              double dPageWidthIn, double dPageHeightIn,
+                              bool bLandscape)
+{
+    if (m_pImpl == nullptr || m_pImpl->pWebView == nullptr || sOutPath.isEmpty()) {
+        return false;
+    }
+
+    // ICoreWebView2_7 起才有 PrintToPdf。拿不到就明确失败，不静默降级。
+    ICoreWebView2_7 *pWebView7 = nullptr;
+    if (FAILED(m_pImpl->pWebView->QueryInterface(
+                   IID_ICoreWebView2_7, reinterpret_cast<void **>(&pWebView7)))
+            || pWebView7 == nullptr) {
+        qWarning("WebView2: 当前 WebView2 运行时不支持 PrintToPdf"
+                 "（需 ICoreWebView2_7，运行时 >= 1.0.1108）");
+        emit printToPdfFinished(false, sOutPath);
+        return false;
+    }
+
+    // 打印设置可选：拿不到就用运行时默认值，仍能出 PDF。
+    ICoreWebView2PrintSettings *pSettings = nullptr;
+    ICoreWebView2Environment6 *pEnv6 = nullptr;
+    if (m_pImpl->pEnv != nullptr
+            && SUCCEEDED(m_pImpl->pEnv->QueryInterface(
+                   IID_ICoreWebView2Environment6,
+                   reinterpret_cast<void **>(&pEnv6)))
+            && pEnv6 != nullptr) {
+        pEnv6->CreatePrintSettings(&pSettings);
+        pEnv6->Release();
+    }
+    if (pSettings != nullptr) {
+        // 背景必须打印：否则深色主题的底色会丢，浅色文字落在白纸上看不见
+        pSettings->put_ShouldPrintBackgrounds(TRUE);
+        if (dPageWidthIn > 0.0 && dPageHeightIn > 0.0) {
+            // 单位英寸（bridge 侧已把渲染层给的毫米换算好）
+            pSettings->put_PageWidth(dPageWidthIn);
+            pSettings->put_PageHeight(dPageHeightIn);
+        }
+        pSettings->put_MarginTop(0.4);
+        pSettings->put_MarginBottom(0.4);
+        pSettings->put_MarginLeft(0.4);
+        pSettings->put_MarginRight(0.4);
+        pSettings->put_Orientation(bLandscape
+                                   ? COREWEBVIEW2_PRINT_ORIENTATION_LANDSCAPE
+                                   : COREWEBVIEW2_PRINT_ORIENTATION_PORTRAIT);
+    }
+
+    PrintToPdfHandler *pHandler = new PrintToPdfHandler(m_pImpl, sOutPath);
+    const HRESULT hr = pWebView7->PrintToPdf(
+        reinterpret_cast<LPCWSTR>(sOutPath.utf16()), pSettings, pHandler);
+    pHandler->Release();
+    if (pSettings != nullptr) {
+        pSettings->Release();
+    }
+    pWebView7->Release();
+
+    if (FAILED(hr)) {
+        qWarning("WebView2: PrintToPdf 调用失败 hr=0x%08lX", (unsigned long)hr);
+        emit printToPdfFinished(false, sOutPath);
+        return false;
+    }
+    return true;
+}
+
+bool WebView2Host::showPrintUI()
 {
     if (m_pImpl == nullptr || m_pImpl->pWebView == nullptr) {
         return false;
     }
-    // ICoreWebView2_3 起才有 CallDevToolsProtocolMethod。
-    // 创建时已 QueryInterface 过 pWebView3（它继承自 ICoreWebView2_3），直接用它。
-    // 拿不到就明确失败，不做静默降级。
-    ICoreWebView2_3 *pWebView3 = m_pImpl->pWebView3.Get();
-    if (pWebView3 == nullptr) {
-        qWarning("WebView2: 当前 SDK/运行时不支持 CallDevToolsProtocolMethod"
-                 "（需 ICoreWebView2_3，SDK >= 1.0.1108）");
-        emit printToPdfFinished(false, QString());
+    // ICoreWebView2_16 起有 ShowPrintUI（运行时 >= 1.0.2210）。
+    // 直接弹系统打印对话框，等价 Electron 的 webContents.print()。
+    ICoreWebView2_16 *pWebView16 = nullptr;
+    if (FAILED(m_pImpl->pWebView->QueryInterface(
+                   IID_ICoreWebView2_16, reinterpret_cast<void **>(&pWebView16)))
+            || pWebView16 == nullptr) {
+        qWarning("WebView2: 当前运行时不支持 ShowPrintUI（需 ICoreWebView2_16）");
         return false;
     }
-
-    DevToolsCallHandler *pHandler = new DevToolsCallHandler(m_pImpl);
-    const HRESULT hr = pWebView3->CallDevToolsProtocolMethod(
-        L"Page.printToPDF",
-        reinterpret_cast<LPCWSTR>(sParamsJson.utf16()),
-        pHandler);
-    pHandler->Release();
-
+    const HRESULT hr =
+        pWebView16->ShowPrintUI(COREWEBVIEW2_PRINT_DIALOG_KIND_SYSTEM);
+    pWebView16->Release();
     if (FAILED(hr)) {
-        qWarning("WebView2: Page.printToPDF 调用失败 hr=0x%08lX", (unsigned long)hr);
-        emit printToPdfFinished(false, QString());
+        qWarning("WebView2: ShowPrintUI 失败 hr=0x%08lX", (unsigned long)hr);
         return false;
     }
     return true;

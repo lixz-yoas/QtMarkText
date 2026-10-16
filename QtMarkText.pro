@@ -5,7 +5,6 @@
 #-------------------------------------------------
 
 QT += core gui widgets network   # network: QLocalServer/QLocalSocket 单实例命名管道
-QT += printsupport               # QPrinter / QPrintDialog：菜单「导出为 PDF」「打印」需要
 
 TARGET = QtMarkText
 TEMPLATE = app

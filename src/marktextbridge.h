@@ -101,6 +101,10 @@ public:
     /// 让渲染层出打印内容并走 CDP 出 PDF，直接落 sPath（不弹任何对话框）
     void printToPdfForSelfTest(const QString &sPath);
 
+    /// 自测用：延时用 JS 点掉渲染层导出对话框里的「导出」按钮
+    ///（executeScript 走页面内 JS，不受沙箱的输入注入限制）
+    void clickExportDialogLater();
+
     void exportHtml();
     /// 导出为 PDF（type = "pdf"）
     void exportPdf();
@@ -241,29 +245,19 @@ private:
     /// Page.printToPDF 正是其方法之一，故与官方同路径、同保真度。
     ///
     /// sParamsJson 为 Page.printToPDF 参数对象（单位英寸）
-    void exportPdfViaCdp(const QJsonObject &objPageOptions, const QString &sOutPath);
+    void exportPdfNative(const QJsonObject &objPageOptions, const QString &sOutPath);
 
     /// CDP 出 PDF 的回调包装（内部把 base64 解成字节写文件）
-    void onCdpPdfReady(bool bOk, const QString &sBase64Pdf, const QString &sOutPath);
+    void onPdfRendered(bool bOk, const QString &sOutPath);
 
     /// 打印：用 CDP 出 PDF 字节流，再交给 QPrinter 送打印机
     ///（不用 QTextDocument，同样是为了样式保真）
-    void printViaCdp();
+    void printViaNative();
 
     /// 从渲染层的 pageOptions 构造 Page.printToPDF 参数（对齐官方 getPdfPageOptions）
-    QJsonObject buildPrintToPdfParams(const QJsonObject &objPageOptions);
+    void pdfPageSizeInches(const QJsonObject &objPageOptions,
+                           double *pdWidth, double *pdHeight, bool *pbLandscape);
 
-
-
-    /// 打印：入参是 CDP Page.printToPDF 产出的 base64 PDF 字节。
-    ///
-    /// ⚠ Qt 5.12 没有 QtPdf 模块（QPdfDocument 需5.13+），QPrinter 无法直接
-    ///   把 PDF 字节当作输入打印。故按打印对话框的选择分两条路：
-    ///   · 选「打印到文件」 -> 直接把 PDF 字节写到目标路径（样式保真）；
-    ///   · 选真实打印机    -> 落地一份临时 PDF 交系统默认程序打开，
-    ///     用户可在那里直接打印。
-    ///   两条路都**不经 QTextDocument**，故不会丢主题样式与 KaTeX 公式。
-    void printHtml(const QString &sBase64Pdf);
     /// 渲染层 mt::response-file-save / -save-as：把渲染层发回的 markdown 落盘，
     /// 并按"新文件 / 覆盖保存"回 mt::set-pathname 或 mt::tab-saved。
     /// 参数顺序：id, filename, pathname, markdown, options, defaultPath
@@ -293,12 +287,10 @@ private:
     std::function<void(const QString &)> m_fnScriptDone;
 
     /// PDF 导出的目标路径（CDP 出PDF 是异步的，回执里要用它决定写哪）
-    QString m_sPdfOutPath;
     /// 自测用的 HTML 落盘路径（走 mt::response-export 回执，区别于正常导出）
     QString m_sSelfTestHtmlPath;
-    /// 本次 CDP 调用是「打印」而非「导出」——两者都用 Page.printToPDF，
-    /// 靠这个标志区分后续动作
-    bool m_bPrintingViaCdp = false;
+    /// 自测用的 PDF 落盘路径（同上：收到 mt::response-export 后跳过对话框）
+    QString m_sPdfSelfTestPath;
 
     bool m_bBridgeReady;
     bool m_bRendererReady;
