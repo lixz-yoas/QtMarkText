@@ -1,0 +1,52 @@
+# ============ 构建产物 ============
+build/
+build_shell/
+build_wv2/
+release/
+debug/
+
+# qmake / moc / uic / rcc 生成物
+Makefile*
+moc_*.cpp
+moc_*.h
+moc_predefs.h
+qrc_*.cpp
+ui_*.h
+*.o
+*.obj
+*.pch
+*.ilk
+*.pdb
+
+# ============ 二进制产物 ============
+# 仓库只收源码；exe/dll 等一律由本地构建产出
+*.exe
+*.dll
+*.a
+*.lib
+*.so
+*.dylib
+
+# ============ Qt Creator 本机配置 ============
+# 含机器绝对路径与本地构建套件信息，不得入库
+*.pro.user
+*.pro.user.*
+
+# ============ 运行时目录 ============
+# bin/ 下是 windeployqt 部署的 Qt 运行库、WebView2 浏览缓存与编译出的 exe
+bin/
+
+# ============ 第三方 SDK ============
+# WebView2 SDK 由 scripts/fetch-webview2-sdk.ps1 自动获取，不入库
+third_party/webview2/
+
+# ============ 内部开发日志 ============
+# readme.md 是逐日变更清单（含本机路径与内部决策过程），
+# 由本地 SVN 管理，不随公开版本发布；公开版说明见 README.md
+readme.md
+
+# ============ 操作系统噪声 ============
+.DS_Store
+Thumbs.db
+desktop.ini
+*.lnk

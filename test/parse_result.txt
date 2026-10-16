@@ -1,0 +1,55 @@
+块总数 = 12
+  #0 Heading level=1 task=0 checked=0 raw="一级标题"
+  #1 Paragraph level=0 task=0 checked=0 raw="这是一个普通段落，含 **粗体**、*斜体* 与 `行内"
+  #2 Heading level=2 task=0 checked=0 raw="二级标题"
+  #3 ListItem level=0 task=0 checked=0 raw="无序项一"
+  #4 ListItem level=0 task=1 checked=0 raw="待办事项"
+  #5 ListItem level=0 task=1 checked=1 raw="已完成事项"
+  #6 ListItem level=0 task=0 checked=0 raw="有序一"
+  #7 ListItem level=0 task=0 checked=0 raw="有序二"
+  #8 Quote level=0 task=0 checked=0 raw="引用文本"
+  #9 HorizontalRule level=0 task=0 checked=0 raw=""
+  #10 CodeFence level=0 task=0 checked=0 raw="int main() { return 0; }"
+  #11 Paragraph level=0 task=0 checked=0 raw="[链接](https://example.com) 与 "
+---
+  [PASS] 标题块数 == 2
+  [PASS] 段落块数 == 2
+  [PASS] 列表项数 == 5
+  [PASS] 引用块数 == 1
+  [PASS] 代码块数 == 1
+  [PASS] 分隔线数 == 1
+  [PASS] 任务项数 == 2
+  [PASS] 已勾选任务数 == 1
+  [PASS] 代码块语言标识与内容正确
+  [PASS] 二级标题 level == 2
+---
+行内片段数 = 14
+    Text text="A " url=""
+    Bold text="粗" url=""
+    Text text=" B " url=""
+    Italic text="斜" url=""
+    Text text=" C " url=""
+    Code text="码" url=""
+    Text text=" D " url=""
+    Link text="链" url="u"
+    Text text=" E " url=""
+    Image text="图" url="p"
+    Text text=" F " url=""
+    Strike text="删" url=""
+    Text text=" G " url=""
+    BoldItalic text="粗斜" url=""
+  [PASS] 行内粗体 == 1
+  [PASS] 行内斜体 == 1
+  [PASS] 行内代码 == 1
+  [PASS] 链接 == 1
+  [PASS] 图片 == 1
+  [PASS] 删除线 == 1
+  [PASS] 粗斜体 == 1
+  [PASS] 链接文本与地址解析正确
+  [PASS] --- 是分隔线
+  [PASS] *** 是分隔线
+  [PASS] --  不是分隔线
+  [PASS] - x 是无序标记
+  [PASS] -x  不是无序标记
+
+==== PASS=23  FAIL=0 ====

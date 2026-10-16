@@ -1,0 +1,202 @@
+==================== 菜单栏（实际生成） ====================
+
+■■ 文件
+  新建标签页  <Ctrl+T>   #newTabMenuItem
+  新建窗口  <Ctrl+N>   #newWindowMenuItem
+  ---
+  打开文件…  <Ctrl+O>   #openFileMenuItem
+  打开文件夹…  <Ctrl+Shift+O>   #openFolderMenuItem
+  打开最近  [子菜单]
+    ---
+    清除最近使用  (禁用)   #clearRecentlyUsedMenuItem
+  ---
+  保存  <Ctrl+S>   #saveMenuItem
+  另存为…  <Ctrl+Shift+S>   #saveAsMenuItem
+  自动保存  [ ]   #autoSaveMenuItem
+  ---
+  移动到   #moveToMenuItem
+  重命名   #renameMenuItem
+  ---
+  导入   #importMenuItem
+  导出  [子菜单]
+    导出为 HTML   #exportHtmlMenuItem
+    导出为 PDF  <Ctrl+Alt+E>   #exportPdfMenuItem
+  打印  <Ctrl+P>   #printMenuItem
+  ---
+  偏好设置  <Ctrl+,>   #preferencesMenuItem
+  ---
+  关闭标签页  <Ctrl+W>   #closeTabMenuItem
+  关闭窗口  <Ctrl+Shift+W>   #closeWindowMenuItem
+  ---
+  退出  <Ctrl+Q>   #quitMenuItem
+
+■■ 编辑
+  撤销  <Ctrl+Z>   #undoMenuItem
+  重做  <Ctrl+Shift+Z>   #redoMenuItem
+  ---
+  剪切  <Ctrl+X>   #cutMenuItem
+  复制  <Ctrl+C>   #copyMenuItem
+  粘贴  <Ctrl+V>   #pasteMenuItem
+  ---
+  复制为富文本  <Ctrl+Shift+C>   #copyAsRichMenuItem
+  复制为 HTML   #copyAsHtmlMenuItem
+  粘贴为纯文本  <Ctrl+Shift+V>   #pasteAsPlainTextMenuItem
+  ---
+  全选  <Ctrl+A>   #selectAllMenuItem
+  ---
+  创建副本  <Ctrl+Alt+D>   #duplicateMenuItem
+  创建段落  <Ctrl+Shift+N>   #createParagraphMenuItem
+  删除段落  <Ctrl+Shift+D>   #deleteParagraphMenuItem
+  ---
+  查找  <Ctrl+F>   #findMenuItem
+  查找下一个  <F3>   #findNextMenuItem
+  查找上一个  <Shift+F3>   #findPreviousMenuItem
+  替换  <Ctrl+R>   #replaceMenuItem
+  ---
+  在文件夹中查找  <Ctrl+Shift+F>   #findInFolderMenuItem
+  ---
+  截图   #screenshot
+  ---
+  行结束符  [子菜单]
+    CRLF (Windows)  [ ]   #crlfLineEndingMenuEntry
+    LF (Unix/macOS)  [ ]   #lfLineEndingMenuEntry
+
+■■ 段落
+  标题 1  [ ]   #heading1MenuItem
+  标题 2  [ ]   #heading2MenuItem
+  标题 3  [ ]   #heading3MenuItem
+  标题 4  [ ]   #heading4MenuItem
+  标题 5  [ ]   #heading5MenuItem
+  标题 6  [ ]   #heading6MenuItem
+  ---
+  提升标题级别  [ ]  <Ctrl++>   #upgradeHeadingMenuItem
+  降低标题级别  [ ]  <Ctrl+->   #degradeHeadingMenuItem
+  ---
+  表格  [ ]  <Ctrl+Shift+T>   #tableMenuItem
+  代码围栏  [ ]  <Ctrl+Shift+K>   #codeFencesMenuItem
+  引用块  [ ]  <Ctrl+Shift+Q>   #quoteBlockMenuItem
+  数学块  [ ]  <Ctrl+Alt+N>   #mathBlockMenuItem
+  HTML 块  [ ]  <Ctrl+Alt+H>   #htmlBlockMenuItem
+  ---
+  有序列表  [ ]  <Ctrl+G>   #orderListMenuItem
+  无序列表  [ ]  <Ctrl+H>   #bulletListMenuItem
+  任务列表  [ ]  <Ctrl+Alt+X>   #taskListMenuItem
+  ---
+  宽松列表项  [ ]  <Ctrl+Alt+L>   #looseListItemMenuItem
+  ---
+  段落  [ ]  <Ctrl+Shift+0>   #paragraphMenuItem
+  水平分割线  [ ]  <Ctrl+Shift+U>   #horizontalLineMenuItem
+  前置元数据  [ ]  <Ctrl+Alt+Y>   #frontMatterMenuItem
+
+■■ 格式
+  粗体  [ ]  <Ctrl+B>   #strongMenuItem
+  斜体  [ ]  <Ctrl+I>   #emphasisMenuItem
+  下划线  [ ]  <Ctrl+U>   #underlineMenuItem
+  ---
+  上标  [ ]   #superscriptMenuItem
+  下标  [ ]   #subscriptMenuItem
+  高亮  [ ]  <Ctrl+Shift+H>   #highlightMenuItem
+  ---
+  行内代码  [ ]  <Ctrl+`>   #inlineCodeMenuItem
+  行内数学  [ ]  <Ctrl+Shift+M>   #inlineMathMenuItem
+  ---
+  删除线  [ ]  <Ctrl+D>   #strikeMenuItem
+  超链接  [ ]  <Ctrl+L>   #hyperlinkMenuItem
+  图片  [ ]  <Ctrl+Shift+I>   #imageMenuItem
+  ---
+  清除格式  <Ctrl+Shift+R>   #clearFormatMenuItem
+
+■■ 窗口
+  最小化  <Ctrl+M>   #minimizeMenuItem
+  总是在最前面  [ ]   #alwaysOnTopMenuItem
+  ---
+  放大   #zoomInMenuItem
+  缩小   #zoomOutMenuItem
+  ---
+  全屏  <F11>   #fullScreenMenuItem
+
+■■ 主题(&T)
+  跟随系统主题  [√]   #follow-system-theme
+  跟随系统主题时无法选择主题  (禁用)   #follow-system-theme-hint
+  — 浅色主题 —  (禁用)   #lightThemesHeader
+  Ayu 浅色  [ ]  (禁用)   #ayu-light
+  Cadmium 浅色  [√]  (禁用)   #light
+  Catppuccin Latte  [ ]  (禁用)   #catppuccin-latte
+  Everforest 浅色  [ ]  (禁用)   #everforest-light
+  Graphite 浅色  [ ]  (禁用)   #graphite
+  Gruvbox 浅色  [ ]  (禁用)   #gruvbox-light
+  Rosé Pine Dawn  [ ]  (禁用)   #rose-pine-dawn
+  Solarized 浅色  [ ]  (禁用)   #solarized-light
+  Tokyo Night 浅色  [ ]  (禁用)   #tokyo-night-light
+  Ulysses 浅色  [ ]  (禁用)   #ulysses
+  ---
+  — 深色主题 —  (禁用)   #darkThemesHeader
+  Ayu 深色  [ ]  (禁用)   #ayu-dark
+  Ayu Mirage  [ ]  (禁用)   #ayu-mirage
+  Cadmium 深色  [ ]  (禁用)   #dark
+  Catppuccin Mocha  [ ]  (禁用)   #catppuccin-mocha
+  cyberdream  [ ]  (禁用)   #cyberdream
+  Dracula  [ ]  (禁用)   #dracula
+  Everforest 深色  [ ]  (禁用)   #everforest-dark
+  Gruvbox 深色  [ ]  (禁用)   #gruvbox-dark
+  Horizon 深色  [ ]  (禁用)   #horizon-dark
+  Kanagawa  [ ]  (禁用)   #kanagawa
+  Material 深色  [ ]  (禁用)   #material-dark
+  Monokai Pro  [ ]  (禁用)   #monokai-pro
+  Nightfox  [ ]  (禁用)   #nightfox
+  Nord  [ ]  (禁用)   #nord
+  One Dark  [ ]  (禁用)   #one-dark
+  Oxocarbon 深色  [ ]  (禁用)   #oxocarbon-dark
+  Palenight  [ ]  (禁用)   #palenight
+  Rosé Pine  [ ]  (禁用)   #rose-pine
+  Rosé Pine Moon  [ ]  (禁用)   #rose-pine-moon
+  Solarized 深色  [ ]  (禁用)   #solarized-dark
+  Synthwave '84  [ ]  (禁用)   #synthwave-84
+  Tokyo Night  [ ]  (禁用)   #tokyo-night
+  Tokyo Night Storm  [ ]  (禁用)   #tokyo-night-storm
+
+■■ 视图
+  命令面板  <Ctrl+Shift+P>   #commandPaletteMenuItem
+  ---
+  源码模式  [ ]  <Ctrl+E>   #sourceCodeModeMenuItem
+  打字机模式  [ ]  <Ctrl+Shift+G>   #typewriterModeMenuItem
+  专注模式  [ ]  <Ctrl+Shift+J>   #focusModeMenuItem
+  ---
+  切换侧边栏  [ ]  <Ctrl+J>   #sideBarMenuItem
+  切换标签栏  [ ]  <Ctrl+Shift+B>   #tabBarMenuItem
+  切换目录  <Ctrl+K>   #tocMenuItem
+  重新加载图片  <F5>   #reloadImagesMenuItem
+  ---
+  显示开发者工具  <Ctrl+Alt+I>   #showDeveloperToolsMenuItem
+  重新加载窗口  <Ctrl+F5>   #reloadWindowMenuItem
+
+■■ 帮助
+  Markdown 参考   #markdownReferenceMenuItem
+  更新日志   #changelogMenuItem
+  ---
+  关注我们   #followUsMenuItem
+  支持 MarkText   #supportMenuItem
+  ---
+  提问   #askQuestionMenuItem
+  报告错误   #reportBugMenuItem
+  查看源码   #viewSourceMenuItem
+  ---
+  许可证   #licenseMenuItem
+  ---
+  检查更新   #checkUpdatesMenuItem
+  ---
+  关于   #aboutMenuItem
+
+==================== 汇总 ====================
+顶层菜单数：8
+顶层菜单的直接子项总数（含分隔符）：165
+
+==================== 偏好设置（独立构造） ====================
+  [0] 通用
+  [1] 编辑器
+  [2] Markdown
+  [3] 拼写
+  [4] 主题
+  [5] 图片
+  [6] 快捷键
+分类页数：1
