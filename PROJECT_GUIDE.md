@@ -31,7 +31,7 @@ Qt 侧只负责"Electron 主进程原本该干的事"。
 
 | 路径 | 内容 | 说明 |
 |------|------|------|
-| `QtMarkText.pro` | 2728 B | qmake 工程：QT=core/gui/widgets、`-isystem` WebView2 头、`DESTDIR=$$PWD/bin` |
+| `QtMarkText.pro` | qmake 工程文件 | `QT += core gui widgets network`（network 为单实例命名管道所需）、`-isystem` WebView2 头、`DESTDIR=$$PWD/bin`、`TARGET=QtMarkText` |
 | `QtMarkText.pro.user` | 22.6 KB | Qt Creator 4.11.2 工程设置（Kit、影子构建目录） |
 | `readme.md` | 38.5 KB | 全程变更清单（按日期分节） |
 | `sample.md` | 690 B | 渲染自测用示例文件 |
@@ -39,7 +39,7 @@ Qt 侧只负责"Electron 主进程原本该干的事"。
 | `webui/` | 887 个文件 / 24 MB | **MarkText 渲染层**（从 app.asar 抽取，零改动） |
 | `tools/` | 2 个脚本 | `asar_tool.js`（asar 抽取）、`grab_window.py`（窗口截图验证） |
 | `test/` | 4 个文件 | 不参与构建的验收程序（菜单导出 / 解析自测 / 冒烟） |
-| `bin/` | 运行目录 | exe + 11 个运行库 DLL + `platforms/` 等 + `config/` |
+| `bin/` | 运行目录 | exe + 12 个运行库 DLL（含 `Qt5Network.dll`）+ `platforms/` 等 + `config/`（ini、日志、webview2 缓存）+ `_old/`（旧版 exe 归档，可删） |
 | `build_shell/` | 命令行影子构建 | 无 Qt Creator 时用 `qmake + mingw32-make` 的备用构建目录 |
 
 ### 2.2 `src/` 模块职责（12 模块）
@@ -72,9 +72,9 @@ Qt 侧只负责"Electron 主进程原本该干的事"。
 | 路径 / 组件 | 用途 | 是否编译依赖 |
 |-------------|------|--------------|
 | `<repo>/third_party/webview2/`（由 `scripts/fetch-webview2-sdk.ps1` 获取） | WebView2 SDK：`include/WebView2.h` + `include/EventToken.h`（自建 shim）、`lib/libWebView2Loader.a`、`bin/WebView2Loader.dll` | 是（`.pro` 中以 `$$PWD` 相对定位） |
-| Qt 5.12.x mingw73_64 套件目录（如 `<Qt>/5.12.9/mingw73_64/`） | qmake、Qt5*.dll | 是 |
+| Qt 5.12.x  mingw73_64 套件目录（如 `<Qt>/5.12.9/mingw73_64/`） | qmake、Qt5*.dll | 是 |
 | MinGW-w64 7.3 工具链目录（如 `<Qt>/Tools/mingw730_64/`） | g++、mingw32-make | 是 |
-| Qt Creator（`<Qt>/Tools/QtCreator/bin/qtcreator.exe`） | IDE，推荐 4.11.2+ | 否 |
+| Qt Creator（`<Qt>/Tools/QtCreator/bin/qtcreator.exe`） | IDE，**推荐 4.11.2+** | 否 |
 | MarkText v0.19.1 源码副本 | 对照主题 CSS、菜单模板、i18n | 否（只读参考） |
 | 本机 MarkText 安装目录 | 渲染层 `app.asar` 的来源（已抽取到 `webui/`，仅在需重抽时用） | 否 |
 | **WebView2 Runtime**（系统级） | 运行期浏览器内核（Win10/11 通常自带，或装 Evergreen Runtime） | 运行依赖 |
@@ -160,11 +160,14 @@ QtMarkText.pro ──> src/*.cpp
 | 编辑 | 点进正文可直接打字；渲染层实时渲染 Markdown |
 | 菜单 | 按 **Alt** 呼出 Qt 菜单栏（WebView2 拿焦点后 Qt 收不到，由引擎转发） |
 | 文件 | 打开 md → 出现标签页；标题栏显示 `文件名 - MarkText` |
-| 日志 | 桥接层通道日志经 `logMessage` 信号发出（当前未接接收者）。排查时在 `mainwindow.cpp` 连接该信号到 `qDebug()` 即可看到；或设 `QTMT_SELFTEST=1` 由页面自检回报 DOM |
+| 单实例 | 已在运行时再双击 exe / 命令行传新文件 → 不会弹第二个窗口，文件转交给现有窗口后新进程自动退出（对齐 MarkText `requestSingleInstanceLock`） |
+| 日志 | 全部 Qt/桥接日志写入 `bin\config\QtMarkText.log`（追加模式，>2MB 自动清空）。启动链应依次出现 `env.js 已安装` → `垫片握手完成` → `导航完成: success=1` → `渲染层已初始化` |
 
 ### 步骤 6：分发（拷到别的机器）
 
-1. 拷整个 `<repo>/bin/`（含 `platforms/`、`styles/`、插件、`config/`）
+1. 拷整个 `<repo>/bin/`（含 `platforms/`、`styles/`、插件、`config/`、12 个 DLL）
+   **注意 `Qt5Network.dll` 必须带上**——单实例保护用了 `QLocalServer`（`QT += network`），
+   缺它 exe 会"启动即消失"且没有任何报错。
 2. 拷 `<repo>/webui/` 到 **bin 的上一级**（即保持 `bin/../webui` 关系）
 3. 目标机需有 WebView2 Runtime
 4. 如重装 Qt 库：`<Qt>/5.12.9/mingw73_64/bin/windeployqt.exe bin\QtMarkText.exe`
@@ -175,10 +178,14 @@ QtMarkText.pro ──> src/*.cpp
 
 | 现象 | 原因 | 处理 |
 |------|------|------|
-| 编辑区空白 / 全白 | WebView2 未挂载或渲染层未就绪 | 看日志是否有 `未找到 webui 资源目录` 或 `WebView2 挂载失败` |
+| 编辑区黑屏 / 全黑没内容 | ① 两个实例共用 `bin/config/webview2` 争用同一浏览器进程；② WebView2 初始化失败但无声 | 已加单实例保护 + 失败时编辑区铺诊断文字；看 `bin\config\QtMarkText.log` 定位 |
+| 进程在但界面全黑 | exe 缺运行库（如 `Qt5Network.dll`）导致加载失败 | 补齐 DLL 或执行 windeployqt；`bin\` 现已含 12 个 Qt/运行库 DLL |
+| 编辑区空白 / 全白 / 黑屏 | ① WebView2 未挂载（看日志 `WebView2 挂载失败`）；② **bounds 为 0×0**（历史根因：`syncBounds()` 曾在控制器就绪前早退导致尺寸未缓存，`put_Bounds({0,0,0,0})`）——已修复，日志可见 `布局同步 bounds=... 尺寸 W×H`，若尺寸为 0×0 即此问题复发 | 看日志 `布局同步` 行的尺寸是否为 0 |
 | 启动即退出 | 缺 `platforms/qwindows.dll` 或 Qt DLL | 补 `bin/platforms/`、执行 windeployqt |
+| 链接报 `cannot open output file: Permission denied` | 旧实例还在跑，exe 被占用 | 关掉所有 QtMarkText 实例再编；实在杀不掉可先把 exe 改名再链 |
 | 界面对但编辑区白屏 | QSettings 类型丢失导致渲染层抛错 | 已由 `PreferencesStore::value()` 类型归一化修复；勿绕过该函数直读 |
-| 截图全黑（自动化验证时） | WebView2 冷启动后 DWM 尚无合成帧 | 最小化→还原一次再抓；`tools/grab_window.py` 已内置 |
+| 弹防火墙/联网提示 | Chromium 后台联网行为 | 已由 `EnvOptions`（`webview2host.cpp`）注入 `--disable-background-networking` 等参数关掉；实测 0 外部连接、0 监听端口 |
+| 截图全黑（自动化验证时） | 历史上即上述 bounds=0×0 黑屏（最小化→还原触发 Resize 修正了 bounds，故"看起来像 DWM 合成问题"）；20261013 已修根因 | `tools/grab_window.py` 仍保留最小化→还原保险 |
 | 编译报 `-Wunknown-pragmas` | WebView2 官方头有 MSVC pragma | 必须保持 `-isystem`（INCLUDEPATH 无效），勿改回 |
 | `.pro` 里 webview2 路径失效 | SDK 缺失 | 重新运行 `scripts/fetch-webview2-sdk.ps1` |
 | webui 换位置后白屏 | 目录查找顺序受限 | 设环境变量 `QTMT_WEBUI_DIR=<绝对路径>` 覆盖 |

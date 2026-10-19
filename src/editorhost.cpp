@@ -12,6 +12,7 @@
 #include <QFileInfo>
 #include <QLabel>
 #include <QPalette>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -262,6 +263,11 @@ WebView2EditorEngine::WebView2EditorEngine(QObject *pOwner, QWidget *pViewParent
         qInfo("WebView2 控制器就绪，开始注入 MarkText 渲染层");
         m_pBridge->setShellWindow(m_pView->window());
         m_pBridge->prepareInjection(m_pHost);
+
+        // 就绪后再补两轮布局同步：控制器就绪回调触发时控件尺寸未必已最终确定，
+        // 而 WebView2 需要拿到一次有效的 bounds 才会让 DWM 合成首帧内容。
+        QTimer::singleShot(0, this, [this]() { syncBounds(); });
+        QTimer::singleShot(300, this, [this]() { syncBounds(); });
     });
 
     // 页面加载完成 → 下发启动配置（对照 Electron 的 did-finish-load）
@@ -288,7 +294,10 @@ WebView2EditorEngine::WebView2EditorEngine(QObject *pOwner, QWidget *pViewParent
             });
 
     connect(m_pHost, &WebView2Host::processFailed, this,
-            [](int nKind, const QString &sDesc) { qWarning("%s (kind=%d)", qPrintable(sDesc), nKind); });
+            [this](int nKind, const QString &sDesc) {
+                qWarning("%s (kind=%d)", qPrintable(sDesc), nKind);
+                showFailureNotice(QStringLiteral("渲染进程异常退出\n%1").arg(sDesc));
+            });
 
     connect(m_pHost, &WebView2Host::newWindowRequested, this,
             [this](const QString &sUrl) {
@@ -362,6 +371,9 @@ void WebView2EditorEngine::setPreferenceAll(const QVariantMap &mapPreferences)
 
 void WebView2EditorEngine::openFile(const QString &sPath)
 {
+    // 记住路径：标签页文字 / 窗口标题（displayName）才有文件名，
+    // 否则任务栏永远显示"未命名.md - MarkText"。
+    setFilePath(sPath);
     if (m_pBridge != nullptr) {
         m_pBridge->openFileInRenderer(sPath);
     }
@@ -413,16 +425,53 @@ void WebView2EditorEngine::ensureAttached()
     const QString sUserData = QCoreApplication::applicationDirPath()
             + QStringLiteral("/config/webview2");
     if (!m_pHost->attach(m_pView, sUserData)) {
-        qWarning("WebView2 挂载失败（Loader 或运行时缺失），编辑区将保持空白");
+        qWarning("WebView2 挂载失败（Loader 或运行时缺失），编辑区将显示诊断信息");
         m_bAttachRequested = false;
+        showFailureNotice(
+            QStringLiteral("WebView2 初始化失败，编辑区无法加载 MarkText 渲染层。\n\n"
+                           "常见原因：\n"
+                           "  1) 本机未安装 Microsoft Edge WebView2 运行时；\n"
+                           "  2) exe 同目录缺少 WebView2Loader.dll；\n"
+                           "  3) 多个 QtMarkText 实例同时运行，争用同一浏览器进程。\n\n"
+                           "详细日志见 exe 同目录 config\\QtMarkText.log。"));
     }
+}
+
+/// 在编辑区铺一层诊断信息（取代"黑屏/白屏没内容"的无声失败）
+void WebView2EditorEngine::showFailureNotice(const QString &sText)
+{
+    if (m_pView == nullptr) {
+        return;
+    }
+    // 已有提示层则只更新文字
+    QLabel *pLabel = m_pView->findChild<QLabel *>(QStringLiteral("mtFailureNotice"));
+    if (pLabel == nullptr) {
+        QVBoxLayout *pLayout = new QVBoxLayout(m_pView);
+        pLayout->setContentsMargins(24, 24, 24, 24);
+        pLabel = new QLabel(m_pView);
+        pLabel->setObjectName(QStringLiteral("mtFailureNotice"));
+        pLabel->setAlignment(Qt::AlignCenter);
+        pLabel->setWordWrap(true);
+        pLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        pLayout->addWidget(pLabel);
+    }
+    pLabel->setText(sText);
+    pLabel->raise();
+    pLabel->show();
 }
 
 void WebView2EditorEngine::syncBounds()
 {
-    if (m_pHost == nullptr || m_pView == nullptr || !m_pHost->isControllerReady()) {
+    if (m_pHost == nullptr || m_pView == nullptr) {
         return;
     }
+    // 【关键·黑屏根因】不要把"控制器尚未就绪"当作早退条件！
+    // WebView2 控制器是异步创建的：本函数首次被调用（控件 Show/Resize）时
+    // 控制器一定还没就绪。WebView2Host::setBounds() 的语义是"先存值，
+    // 能应用时才应用"——尺寸先缓存进 Impl，控制器就绪回调里的 applyBounds()
+    // 再取用。若此处早退，就绪回调拿到的仍是初始值 0×0，
+    // put_Bounds({0,0,0,0}) 会让 WebView2 宿主窗口尺寸为 0，
+    // 编辑区只剩 put_DefaultBackgroundColor 铺的底色（深色主题下就是"黑窗口"）。
     m_pHost->setBounds(0, 0, m_pView->width(), m_pView->height());
     m_pHost->setVisible(m_pView->isVisible());
 }

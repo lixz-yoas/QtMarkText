@@ -22,6 +22,8 @@
 
 #include <windows.h>
 
+#include <string>
+
 #include <wrl/client.h>
 
 // WebView2.h 里带 MSVC 专用的 #pragma warning，GCC 会报 -Wunknown-pragmas；
@@ -92,6 +94,116 @@ protected:
 
 private:
     LONG m_nRef;
+};
+
+//=====================================================================
+//  浏览器进程参数（禁用 Chromium 的一切后台联网行为）
+// ---------------------------------------------------------------------
+//  WebView2 内嵌的是完整 Chromium，默认会在启动时向微软/Google 的服务器发请求：
+//    组件更新（Component Updater）、域名可靠性上报（Domain Reliability）、
+//    变体种子（Variations）、同步（Sync）、钓鱼检测（Safe Browsing）……
+//  对一个"纯本地渲染 Markdown 文件"的桌面程序来说这些全是多余的，
+//  并且会在防火墙/代理受限的环境里弹出"正在连接网络"一类提示。
+//
+//  做法：自己实现 ICoreWebView2EnvironmentOptions，把
+//  AdditionalBrowserArguments 交给运行时（等价于命令行 --xxx）。
+//  注意 Chromium 参数区分「单个 --flag」与「--flag=value」，故合并成一行。
+//=====================================================================
+class EnvOptions : public Wv2Callback<ICoreWebView2EnvironmentOptions>
+{
+public:
+    EnvOptions()
+        : m_sArgs(L"--disable-background-networking"
+                  L" --disable-component-update"
+                  L" --disable-component-extensions-with-background-pages"
+                  L" --disable-domain-reliability"
+                  L" --disable-client-side-phishing-detection"
+                  L" --disable-sync"
+                  L" --disable-breakpad"
+                  L" --disable-default-apps"
+                  L" --no-first-run"
+                  L" --no-default-browser-check"
+                  L" --no-pings"
+                  L" --disable-features=OptimizationHints,OptimizationGuideModelDownloading,"
+                  L"MediaRouter,Translate,InterestFeedContentSuggestions,SegmentationPlatform")
+    {
+    }
+
+    const IID &iidOfInterface() const override
+    {
+        return IID_ICoreWebView2EnvironmentOptions;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_AdditionalBrowserArguments(LPWSTR *ppValue) override
+    {
+        if (ppValue == nullptr) {
+            return E_POINTER;
+        }
+        *ppValue = duplicateWide(m_sArgs);
+        return (*ppValue != nullptr) ? S_OK : E_OUTOFMEMORY;
+    }
+
+    HRESULT STDMETHODCALLTYPE put_AdditionalBrowserArguments(LPCWSTR pszValue) override
+    {
+        m_sArgs = (pszValue != nullptr) ? pszValue : L"";
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_Language(LPWSTR *ppValue) override
+    {
+        if (ppValue != nullptr) {
+            *ppValue = nullptr;
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE put_Language(LPCWSTR pszValue) override
+    {
+        Q_UNUSED(pszValue)
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_TargetCompatibleBrowserVersion(LPWSTR *ppValue) override
+    {
+        if (ppValue == nullptr) {
+            return E_POINTER;
+        }
+        // 用运行时支持的版本区间下限，避免被要求"目标版本不匹配"
+        *ppValue = duplicateWide(L"95.0.1020.44");
+        return (*ppValue != nullptr) ? S_OK : E_OUTOFMEMORY;
+    }
+    HRESULT STDMETHODCALLTYPE put_TargetCompatibleBrowserVersion(LPCWSTR pszValue) override
+    {
+        Q_UNUSED(pszValue)
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE get_AllowSingleSignOnUsingOSPrimaryAccount(BOOL *pAllow) override
+    {
+        if (pAllow == nullptr) {
+            return E_POINTER;
+        }
+        *pAllow = FALSE;   // 不参与系统级单点登录（同样属于"联网"范畴）
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE put_AllowSingleSignOnUsingOSPrimaryAccount(BOOL bAllow) override
+    {
+        Q_UNUSED(bAllow)
+        return S_OK;
+    }
+
+private:
+    /// WebView2 要求 propget 返回的字符串用 CoTaskMemAlloc 分配，由调用方 CoTaskMemFree
+    static LPWSTR duplicateWide(const std::wstring &sValue)
+    {
+        const size_t nBytes = (sValue.size() + 1) * sizeof(wchar_t);
+        LPWSTR pszOut = static_cast<LPWSTR>(CoTaskMemAlloc(nBytes));
+        if (pszOut != nullptr) {
+            memcpy(pszOut, sValue.c_str(), nBytes);
+        }
+        return pszOut;
+    }
+
+    std::wstring m_sArgs;
 };
 
 //=====================================================================
@@ -166,11 +278,23 @@ struct WebView2Host::Impl
         }
     }
 
+    /// 上一次已应用（并记录日志）的 bounds；仅变化时打日志，避免拖拽缩放刷屏
+    RECT rcLastLogged = { -1, -1, -1, -1 };
+
     void applyBounds()
     {
         if (pCtl != nullptr) {
             RECT rc = { nX, nY, nX + nWidth, nY + nHeight };
             pCtl->put_Bounds(rc);
+            if (rc.left != rcLastLogged.left || rc.top != rcLastLogged.top
+                    || rc.right != rcLastLogged.right || rc.bottom != rcLastLogged.bottom) {
+                rcLastLogged = rc;
+                qInfo("WebView2: 布局同步 bounds=(%ld,%ld)-(%ld,%ld) 尺寸 %ld×%ld",
+                      static_cast<long>(rc.left), static_cast<long>(rc.top),
+                      static_cast<long>(rc.right), static_cast<long>(rc.bottom),
+                      static_cast<long>(rc.right - rc.left),
+                      static_cast<long>(rc.bottom - rc.top));
+            }
         }
     }
 
@@ -697,10 +821,16 @@ bool WebView2Host::attach(QWidget *pOwner, const QString &sUserDataDir)
 
     EnvCompletedHandler *pEnvHandler = new EnvCompletedHandler(m_pImpl);
     m_pImpl->keepHandler(static_cast<IUnknown *>(pEnvHandler));
+
+    // 浏览器参数：关掉 Chromium 的后台联网（组件更新 / 变体 / 同步 / 上报……），
+    // 详见 EnvOptions 的注释。传给 CreateCoreWebView2EnvironmentWithOptions 后
+    // 运行时会把参数串复制走，故局部对象在本函数返回后就可以释放。
+    EnvOptions *pOptions = new EnvOptions();
     HRESULT hr = m_pImpl->pfnCreateEnv(nullptr,
                                        reinterpret_cast<const wchar_t *>(sAbsUserData.utf16()),
-                                       nullptr,
+                                       pOptions,
                                        pEnvHandler);
+    pOptions->Release();
     pEnvHandler->Release();
     if (FAILED(hr)) {
         qWarning("WebView2: CreateCoreWebView2EnvironmentWithOptions 失败 hr=0x%08lX",

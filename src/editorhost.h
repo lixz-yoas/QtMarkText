@@ -168,6 +168,8 @@ protected:
 private:
     void ensureAttached();
     void syncBounds();
+    /// WebView2 挂载/运行失败时，在编辑区铺一层可见的诊断信息（而非无声黑屏）
+    void showFailureNotice(const QString &sText);
 
     QWidget      *m_pView;
     WebView2Host *m_pHost;

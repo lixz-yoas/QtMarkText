@@ -4,9 +4,9 @@
 # 编码：UTF-8（无 BOM）+ CRLF
 #-------------------------------------------------
 
-QT += core gui widgets
+QT += core gui widgets network   # network: QLocalServer/QLocalSocket 单实例命名管道
 
-TARGET = QtMarkText1
+TARGET = QtMarkText
 TEMPLATE = app
 CONFIG += c++11
 
