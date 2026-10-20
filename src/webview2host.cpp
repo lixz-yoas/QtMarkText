@@ -247,6 +247,10 @@ struct WebView2Host::Impl
     COLORREF crDefaultBg = 0;
     bool     bDefaultBgSet = false;
 
+    /// 菜单快捷键过滤器：AcceleratorKeyPressed 里同步询问外壳是否接管该组合键。
+    /// 由 WebView2EditorEngine 装配（转发到 MainWindow 的菜单 QAction 匹配）。
+    std::function<bool(int nQtKey, int nQtModifiers)> fnShortcutFilter;
+
     /// 把存储的背景色应用到控制器（控制器就绪后才有效）。
     /// put_DefaultBackgroundColor 在 ICoreWebView2Controller2（0.9.430+），
     /// 运行时过旧则静默跳过——只损失"加载前底色"，不影响功能。
@@ -530,14 +534,37 @@ public:
         Q_UNUSED(pSender)
         UINT nVk = 0;
         COREWEBVIEW2_KEY_EVENT_KIND kind = COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN;
-        if (pArgs != nullptr
-                && SUCCEEDED(pArgs->get_VirtualKey(&nVk))
-                && SUCCEEDED(pArgs->get_KeyEventKind(&kind))) {
-            // 只关心 Alt（VK_MENU=0x12）。Alt 属于系统键（SystemKeyDown），
-            // WebView2 不会自己消费它，无需 put_Handled，让冒泡照常。
-            if (nVk == 0x12 && kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN) {
-                emit m_pImpl->pHost->acceleratorKeyPressed(int(kind), int(nVk));
+        if (pArgs == nullptr
+                || FAILED(pArgs->get_VirtualKey(&nVk))
+                || FAILED(pArgs->get_KeyEventKind(&kind))) {
+            return S_OK;
+        }
+
+        const bool bKeyDown = (kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
+                               || kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN);
+
+        // ---- 1) 菜单快捷键接管 ----
+        // 焦点在页面里时按键直接进了 WebView2 的 HWND，Qt 的 QAction::shortcut
+        // 收不到，菜单上写着的 Ctrl+S / Ctrl+N 全成摆设。这里趁页面还没消费按键，
+        // 先同步问外壳认不认这个组合键：认就 put_Handled(TRUE) 吞掉，交给菜单命令。
+        // （对齐 Electron：菜单 accelerator 由主进程统一分发。）
+        if (bKeyDown && m_pImpl->fnShortcutFilter) {
+            int nMods = 0;
+            if (GetKeyState(VK_CONTROL) & 0x8000) { nMods |= Qt::ControlModifier; }
+            if (GetKeyState(VK_SHIFT)   & 0x8000) { nMods |= Qt::ShiftModifier; }
+            if (GetKeyState(VK_MENU)    & 0x8000) { nMods |= Qt::AltModifier; }
+            const int nKey = WebView2Host::qtKeyFromVirtualKey(nVk);
+            if (nKey != 0 && m_pImpl->fnShortcutFilter(nKey, nMods)) {
+                pArgs->put_Handled(TRUE);
+                return S_OK;
             }
+        }
+
+        // ---- 2) Alt（VK_MENU=0x12）----
+        // 对齐 MarkText「按 Alt 呼出菜单栏」。Alt 是系统键（SystemKeyDown），
+        // WebView2 不会自己消费它，无需 put_Handled，让冒泡照常。
+        if (nVk == 0x12 && kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN) {
+            emit m_pImpl->pHost->acceleratorKeyPressed(int(kind), int(nVk));
         }
         return S_OK;
     }
@@ -715,14 +742,11 @@ WebView2Host::WebView2Host(QObject *parent)
 
 WebView2Host::~WebView2Host()
 {
+    qInfo("[退出] ~WebView2Host 进入");
     // 先停浏览器，再释放 COM 对象，最后清回调，避免回调打到半析构的 Impl
-    if (m_pImpl->pCtl != nullptr) {
-        m_pImpl->pCtl->Close();
-    }
-    m_pImpl->pWebView3.Reset();
-    m_pImpl->pWebView.Reset();
-    m_pImpl->pCtl.Reset();
-    m_pImpl->pEnv.Reset();
+    // （若 close() 已经放过，这里的 ComPtr 都是空，重复调用无副作用）
+    close();
+    qInfo("[退出]   COM 释放完毕");
     m_pImpl->listHandlers.clear();
     if (m_pImpl->hLoader != nullptr) {
         FreeLibrary(m_pImpl->hLoader);
@@ -730,6 +754,7 @@ WebView2Host::~WebView2Host()
     }
     delete m_pImpl;
     m_pImpl = nullptr;
+    qInfo("[退出] ~WebView2Host 退出");
 }
 
 //=====================================================================
@@ -972,6 +997,57 @@ bool WebView2Host::sendClipboardShortcut(const QString &sAction)
     return sendCtrlKey(nVk);
 }
 
+//---------------------------------------------------------------------
+//  菜单快捷键接管
+//---------------------------------------------------------------------
+void WebView2Host::setShortcutFilter(std::function<bool(int, int)> fn)
+{
+    m_pImpl->fnShortcutFilter = std::move(fn);
+}
+
+int WebView2Host::qtKeyFromVirtualKey(unsigned int nVirtualKey)
+{
+    // 字母 / 数字 / F1~F12：Win32 虚拟键值与 Qt::Key 完全一致，直接透传
+    if ((nVirtualKey >= 'A' && nVirtualKey <= 'Z')
+            || (nVirtualKey >= '0' && nVirtualKey <= '9')
+            || (nVirtualKey >= VK_F1 && nVirtualKey <= VK_F12)) {
+        return static_cast<int>(nVirtualKey);
+    }
+    // 其余零散键逐个显式映射（OEM 键的 VK 值与 Qt 值不同源）
+    switch (nVirtualKey) {
+    case VK_OEM_COMMA:  return Qt::Key_Comma;        // ,
+    case VK_OEM_PERIOD: return Qt::Key_Period;       // .
+    case VK_OEM_MINUS:  return Qt::Key_Minus;        // -
+    case VK_OEM_PLUS:   return Qt::Key_Plus;         // = / +
+    case VK_ADD:        return Qt::Key_Plus;         // 小键盘 +
+    case VK_SUBTRACT:   return Qt::Key_Minus;        // 小键盘 -
+    case VK_OEM_1:      return Qt::Key_Semicolon;    // ;
+    case VK_OEM_2:      return Qt::Key_Slash;        // /
+    case VK_OEM_3:      return Qt::Key_QuoteLeft;    // `
+    case VK_OEM_4:      return Qt::Key_BracketLeft;  // [
+    case VK_OEM_5:      return Qt::Key_Backslash;    // backslash
+    case VK_OEM_6:      return Qt::Key_BracketRight; // ]
+    case VK_OEM_7:      return Qt::Key_Apostrophe;   // '
+    case VK_SPACE:      return Qt::Key_Space;
+    case VK_TAB:        return Qt::Key_Tab;
+    case VK_RETURN:     return Qt::Key_Return;
+    case VK_ESCAPE:     return Qt::Key_Escape;
+    case VK_BACK:       return Qt::Key_Backspace;
+    case VK_DELETE:     return Qt::Key_Delete;
+    case VK_INSERT:     return Qt::Key_Insert;
+    case VK_HOME:       return Qt::Key_Home;
+    case VK_END:        return Qt::Key_End;
+    case VK_PRIOR:      return Qt::Key_PageUp;
+    case VK_NEXT:       return Qt::Key_PageDown;
+    case VK_LEFT:       return Qt::Key_Left;
+    case VK_RIGHT:      return Qt::Key_Right;
+    case VK_UP:         return Qt::Key_Up;
+    case VK_DOWN:       return Qt::Key_Down;
+    default:            break;
+    }
+    return 0;
+}
+
 //=====================================================================
 //  导航
 //=====================================================================
@@ -1050,7 +1126,20 @@ void WebView2Host::openDevTools()
 
 void WebView2Host::close()
 {
+    // 完整关闭：控制器 + 浏览器环境一起释放。
+    // 只关控制器不释放环境时，宿主进程退出后浏览器进程还会拖一段时间。
+    // ⚠ 调用时机：必须在 Qt 消息循环仍在运行时调用，见 IEditorEngine::shutdown()。
+    if (m_pImpl == nullptr) {
+        return;
+    }
     if (m_pImpl->pCtl != nullptr) {
         m_pImpl->pCtl->Close();
     }
+    m_pImpl->pWebView3.Reset();
+    m_pImpl->pWebView.Reset();
+    m_pImpl->pCtl.Reset();
+    m_pImpl->pEnv.Reset();
+    m_pImpl->bCtlOk = false;
+    m_pImpl->bEnvOk = false;
+    qInfo("[退出] WebView2 控制器与环境已释放");
 }

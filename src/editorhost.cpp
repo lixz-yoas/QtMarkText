@@ -71,6 +71,11 @@ MarkTextBridge *IEditorEngine::bridge() const
     return nullptr;   // 仅 WebView2 引擎有桥接层
 }
 
+void IEditorEngine::shutdown()
+{
+    // 默认无原生资源可释放（占位引擎是纯 Qt 控件）
+}
+
 QString IEditorEngine::exportHtml() const
 {
     // 默认不提供；由外壳兜底（把 Markdown 源码包进 <pre>）
@@ -308,9 +313,11 @@ WebView2EditorEngine::WebView2EditorEngine(QObject *pOwner, QWidget *pViewParent
 WebView2EditorEngine::~WebView2EditorEngine()
 {
     // 控件与宿主的父子关系挂在调用方（标签页）与本对象上，此处只清引用
+    qInfo("[退出] ~WebView2EditorEngine 进入");
     m_pView = nullptr;
     m_pHost = nullptr;
     m_pBridge = nullptr;
+    qInfo("[退出] ~WebView2EditorEngine 退出");
 }
 
 QString WebView2EditorEngine::engineName() const
@@ -326,6 +333,21 @@ QWidget *WebView2EditorEngine::view() const
 MarkTextBridge *WebView2EditorEngine::bridge() const
 {
     return m_pBridge;
+}
+
+void WebView2EditorEngine::shutdown()
+{
+    // 让宿主在事件循环仍存活时把 WebView2 关掉（否则进程退出要拖十几秒）
+    if (m_pHost != nullptr) {
+        m_pHost->close();
+    }
+}
+
+void WebView2EditorEngine::setShortcutHandler(std::function<bool(int, int)> fn)
+{
+    if (m_pHost != nullptr) {
+        m_pHost->setShortcutFilter(std::move(fn));
+    }
 }
 
 void WebView2EditorEngine::setMarkdownText(const QString &sText)

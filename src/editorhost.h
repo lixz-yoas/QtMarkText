@@ -7,6 +7,8 @@
 #include <QVariant>
 #include <QVariantMap>
 
+#include <functional>
+
 class QWidget;
 class MarkTextBridge;
 class WebView2Host;
@@ -86,6 +88,14 @@ public:
     /// 外壳据此接上「菜单 → 渲染层命令」「窗口控制」「偏好改动」等通路。
     virtual MarkTextBridge *bridge() const;
 
+    /// 释放引擎背后的原生资源（WebView2 控制器 / 浏览器环境）。
+    ///
+    /// 调用时机很关键：**必须在 Qt 消息循环还活着的时候调**。
+    /// WebView2 的 Close()/环境释放是"发 IPC 让浏览器进程收尾"的异步流程，
+    /// 需要消息泵把回调派完；等到 main() 返回后再做，事件循环已经停摆，
+    /// 清理只能靠内核超时兜底——实测退出要卡 18 秒（见 readme 退出分析）。
+    virtual void shutdown();
+
 signals:
     /// 标题/修改状态变化，外壳据此刷新标签页与状态栏
     void titleChanged(const QString &sTitle);
@@ -149,6 +159,14 @@ public:
     void setPreferenceAll(const QVariantMap &mapPreferences) override;
 
     MarkTextBridge *bridge() const override;
+
+    void shutdown() override;
+
+    /// 把外壳的「菜单快捷键处理器」装进 WebView2。
+    /// 为什么需要：焦点在渲染层里时按键直接进 WebView2，Qt 的 QAction 快捷键
+    /// 收不到；由 WebView2 的 AcceleratorKeyPressed 事件回调过来，与菜单匹配。
+    /// fn 返回 true 表示外壳已接管该组合键（本次按键会被吞掉）。
+    void setShortcutHandler(std::function<bool(int nQtKey, int nQtModifiers)> fn);
 
     void openFile(const QString &sPath) override;
     /// 渲染层是否就绪

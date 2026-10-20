@@ -354,13 +354,13 @@ void MarkTextMenu::buildParagraphMenu(QMenuBar *pBar)
     QMenu *pMenu = pBar->addMenu(QStringLiteral("段落"));            // menu.paragraph.title
     pMenu->setObjectName(QStringLiteral("paragraphMenuEntry"));
 
-    // 标题 1~6：MarkText 在 Windows 上不给默认键位（Ctrl+Alt 是 AltGr 别名）
+    // 标题 1~5：MarkText 在 Windows 上不给默认键位（Ctrl+Alt 是 AltGr 别名）。
+    // 只保留 1~5：六级标题在 Markdown 里几乎不用，菜单里留着只是噪音。
     addCommand(pMenu, QStringLiteral("heading1MenuItem"), QStringLiteral("标题 1"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading2MenuItem"), QStringLiteral("标题 2"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading3MenuItem"), QStringLiteral("标题 3"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading4MenuItem"), QStringLiteral("标题 4"), QString(), true);
     addCommand(pMenu, QStringLiteral("heading5MenuItem"), QStringLiteral("标题 5"), QString(), true);
-    addCommand(pMenu, QStringLiteral("heading6MenuItem"), QStringLiteral("标题 6"), QString(), true);
     addSeparator(pMenu);
 
     addCommand(pMenu, QStringLiteral("upgradeHeadingMenuItem"), QStringLiteral("提升标题级别"), QStringLiteral("Ctrl+Plus"), true);  // paragraph.upgrade-heading

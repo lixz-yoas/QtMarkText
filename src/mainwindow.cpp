@@ -12,12 +12,14 @@
 #include <QCloseEvent>
 #include <QDir>
 #include <QDockWidget>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QInputDialog>
 #include <QJsonArray>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -25,6 +27,7 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPdfWriter>
+#include <QPointer>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTabBar>
@@ -189,6 +192,55 @@ MainWindow::MainWindow(QWidget *pParent)
 
 MainWindow::~MainWindow()
 {
+    qInfo("[退出] ~MainWindow 进入（剩余顶层窗口 %d 个）",
+          QApplication::topLevelWidgets().size());
+    qInfo("[退出] ~MainWindow 退出");
+}
+
+void MainWindow::closeEvent(QCloseEvent *pEvent)
+{
+    // 退出诊断：Qt 只在「没有可见的、无父的顶层窗口」时才自动退出事件循环。
+    // 把当前顶层窗口全部列出来，谁挡着退出就一目了然（详见 readme 退出分析）。
+    const QList<QWidget *> listTops = QApplication::topLevelWidgets();
+    qInfo("[退出] closeEvent：顶层窗口 %d 个", listTops.size());
+    for (QWidget *pW : listTops) {
+        if (pW == nullptr) {
+            continue;
+        }
+        qInfo("[退出]   - %s visible=%d parent=%p type=%d",
+              pW->metaObject()->className(), pW->isVisible() ? 1 : 0,
+              reinterpret_cast<void *>(pW->parentWidget()),
+              static_cast<int>(pW->windowType()));
+    }
+
+    // ---- 关键：在消息循环还活着的时候关掉 WebView2 ----
+    // WebView2 的 Close()/环境释放是"发 IPC 让浏览器进程收尾"的异步流程，
+    // 要靠消息泵把回调派完。若拖到 main() 返回之后（事件循环已停摆）才做，
+    // 清理只能等内核超时，实测进程要卡 18 秒才真正消失（用户观感=退不干净）。
+    // 这里提前关，并把随之产生的异步消息当场消化掉。
+    const QList<IEditorEngine *> listEngines = findChildren<IEditorEngine *>();
+    for (IEditorEngine *pEngine : listEngines) {
+        if (pEngine != nullptr) {
+            pEngine->shutdown();
+        }
+    }
+    if (!listEngines.isEmpty()) {
+        for (int i = 0; i < 10; ++i) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 30);
+        }
+        qInfo("[退出] 渲染层已关闭并消化完异步消息");
+    }
+
+    // ---- 偏好与最近文件落盘 ----
+    // PreferencesStore 是永不析构的堆单例，其 QSettings 只在显式 sync() 时才写盘；
+    // 不补这一刀，用户刚改的偏好会随进程一起消失（退出流程见 readme 退出分析）。
+    if (m_pStore != nullptr) {
+        m_pStore->sync();
+        qInfo("[退出] 偏好设置已落盘");
+    }
+    saveRecentFiles();
+
+    QMainWindow::closeEvent(pEvent);
 }
 
 //=====================================================================
@@ -357,6 +409,12 @@ IEditorEngine *MainWindow::addEditorTab()
     if (WebView2EditorEngine *pWv2 = qobject_cast<WebView2EditorEngine *>(pEngine)) {
         connect(pWv2, &WebView2EditorEngine::altKeyPressed,
                 this, &MainWindow::onAltPressed);
+        // 菜单快捷键接管：焦点在渲染层里时按键进不了 Qt（直接进了 WebView2 的
+        // 原生窗口），QAction 的快捷键全失效。由 WebView2 的 AcceleratorKeyPressed
+        // 回调进来，与菜单匹配后由外壳执行 —— 对齐 Electron 的菜单 accelerator。
+        pWv2->setShortcutHandler([this](int nQtKey, int nQtModifiers) {
+            return tryShortcut(nQtKey, nQtModifiers);
+        });
     }
 
     // 渲染层标题栏的窗口按钮（最小化/最大化/关闭/全屏）→ 外壳执行
@@ -765,6 +823,51 @@ void MainWindow::onRecentFileActivated(const QString &sPath)
 //=====================================================================
 //  菜单命令分发
 //=====================================================================
+bool MainWindow::tryShortcut(int nQtKey, int nQtModifiers)
+{
+    if (menuBar() == nullptr || nQtKey == 0) {
+        return false;
+    }
+
+    const QKeySequence seq(nQtModifiers | nQtKey);
+
+    // 菜单项都在 menuBar 的子孙里（QMenuBar → QMenu → QAction），递归找一次即可。
+    // 按一次键遍历百来个 action 做整数比较，代价在微秒级，不值得再加缓存。
+    const QList<QAction *> listActions = menuBar()->findChildren<QAction *>();
+    for (QAction *pAction : listActions) {
+        if (pAction == nullptr || !pAction->isEnabled()) {
+            continue;
+        }
+        const QKeySequence seqAction = pAction->shortcut();
+        if (seqAction.isEmpty()
+                || seqAction.matches(seq) != QKeySequence::ExactMatch) {
+            continue;
+        }
+
+        const QString sId = pAction->objectName();
+
+        // 剪切/复制/粘贴放行给 Chromium 原生处理（它本来就能用）。
+        // 若这里吞掉再注入 Ctrl+X/C/V，注入的按键会再次触发本函数 —— 死循环。
+        if (sId == QLatin1String("cutMenuItem")
+                || sId == QLatin1String("copyMenuItem")
+                || sId == QLatin1String("pasteMenuItem")) {
+            return false;
+        }
+
+        // 这里还处在 WebView2 的按键回调里，不要同步执行重命令
+        //（可能弹模态对话框、发 IPC、注入按键）；只"认领"这个组合键，
+        // 真正执行推到事件循环下一拍。
+        QPointer<QAction> pGuard(pAction);
+        QTimer::singleShot(0, this, [pGuard]() {
+            if (pGuard != nullptr) {
+                pGuard->trigger();
+            }
+        });
+        return true;
+    }
+    return false;
+}
+
 void MainWindow::onMenuCommand(const QString &sId)
 {
     // ---------------- 渲染层优先（外壳与渲染层都实现同一件事时）----------------

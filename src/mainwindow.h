@@ -5,6 +5,8 @@
 #include <QString>
 #include <QStringList>
 
+class QCloseEvent;
+class QAction;
 class QDockWidget;
 class QFileSystemModel;
 class QColor;
@@ -48,6 +50,9 @@ protected:
     /// 客户区扩展到整个窗口矩形；最大化时按系统边框内缩，防止窗口超出屏幕。
     bool nativeEvent(const QByteArray &eventType, void *pMessage, long *pnResult) override;
 
+    /// 关闭窗口时的退出时序处理（WebView2 必须在消息循环尚在时关闭，否则进程退出不干净）
+    void closeEvent(QCloseEvent *pEvent) override;
+
 private slots:
     /// WebView2 内按下了 Alt → 呼出/收起菜单栏（对齐 MarkText）
     void onAltPressed();
@@ -78,6 +83,12 @@ private:
     IEditorEngine *currentEngine() const;
     IEditorEngine *engineAt(int nIndex) const;
     int            indexOfEngine(const IEditorEngine *pEngine) const;
+
+    /// 菜单快捷键接管：焦点在 WebView2 里时按键进不了 Qt，由 WebView2 的
+    /// AcceleratorKeyPressed 回调到这里。与菜单里各 QAction 的快捷键匹配，
+    /// 命中就"认领"（返回 true → 宿主导致 put_Handled 吞掉按键）并延后执行命令。
+    /// nQtKey / nQtModifiers 均为 Qt 值（Qt::Key_* / Qt::*Modifier）。
+    bool tryShortcut(int nQtKey, int nQtModifiers);
 
     // ---- 文件 ----
     bool saveCurrentFile(bool bSaveAs);

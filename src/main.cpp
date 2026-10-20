@@ -15,6 +15,13 @@
 
 #include "mainwindow.h"
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 //=====================================================================
 //  运行日志落盘
 // ---------------------------------------------------------------------
@@ -162,41 +169,60 @@ void acceptFromLaterInstances(QCoreApplication &app, MainWindow &w)
 
 int main(int argc, char *argv[])
 {
-    QApplication app(argc, argv);
+    int nExitCode = 0;
 
-    // 源码为 UTF-8，统一本地 8 位编码的解释方式，避免中文乱码
-    QTextCodec::setCodecForLocale(QTextCodec::codecForName("UTF-8"));
+    // QApplication 也放进作用域：退出诊断要能区分「事件循环返回」/「app 析构」/
+    // 「CRT 退出」三段各花了多久（见 readme 退出分析）。
+    {
+        QApplication app(argc, argv);
 
-    app.setApplicationName(QStringLiteral("QtMarkText"));
-    app.setApplicationVersion(QStringLiteral("0.1.0"));
-    app.setOrganizationName(QStringLiteral("QtMarkText"));
+        // 源码为 UTF-8，统一本地 8 位编码的解释方式，避免中文乱码
+        QTextCodec::setCodecForLocale(QTextCodec::codecForName("UTF-8"));
 
-    installFileLogger();
+        app.setApplicationName(QStringLiteral("QtMarkText"));
+        app.setApplicationVersion(QStringLiteral("0.1.0"));
+        app.setOrganizationName(QStringLiteral("QtMarkText"));
 
-    // 命令行文件参数（对齐 MarkText：marktext.exe xxx.md）
-    QStringList listFiles;
-    for (int i = 1; i < argc; ++i) {
-        const QString sPath = QString::fromLocal8Bit(argv[i]);
-        if (QFileInfo(sPath).isFile()) {
-            listFiles.append(QDir::fromNativeSeparators(sPath));
+        installFileLogger();
+
+        // 命令行文件参数（对齐 MarkText：marktext.exe xxx.md）
+        QStringList listFiles;
+        for (int i = 1; i < argc; ++i) {
+            const QString sPath = QString::fromLocal8Bit(argv[i]);
+            if (QFileInfo(sPath).isFile()) {
+                listFiles.append(QDir::fromNativeSeparators(sPath));
+            }
+        }
+
+        // 已有实例在跑：转交文件后退出（对齐 MarkText requestSingleInstanceLock）
+        if (forwardToRunningInstance(listFiles)) {
+            qInfo("检测到已运行的 QtMarkText，转交 %d 个文件后退出", listFiles.size());
+            qInfo("[退出] 转交模式：即将析构 QApplication");
+        } else {
+            MainWindow w;
+            w.show();
+
+            // 文件在窗口显示后再打开，此时 WebView2 已随首屏 Show 开始挂载
+            for (const QString &sPath : listFiles) {
+                QTimer::singleShot(0, &w, [&w, sPath]() { w.openFile(sPath); });
+            }
+
+            acceptFromLaterInstances(app, w);
+
+            nExitCode = app.exec();
+            qInfo("[退出] app.exec() 已返回 rc=%d，即将析构 MainWindow / QApplication",
+                  nExitCode);
         }
     }
 
-    // 已有实例在跑：转交文件后退出（对齐 MarkText requestSingleInstanceLock）
-    if (forwardToRunningInstance(listFiles)) {
-        qInfo("检测到已运行的 QtMarkText，转交 %d 个文件后退出", listFiles.size());
-        return 0;
-    }
-
-    MainWindow w;
-    w.show();
-
-    // 文件在窗口显示后再打开，此时 WebView2 已随首屏 Show 开始挂载
-    for (const QString &sPath : listFiles) {
-        QTimer::singleShot(0, &w, [&w, sPath]() { w.openFile(sPath); });
-    }
-
-    acceptFromLaterInstances(app, w);
-
-    return app.exec();
+    // ---- 退出收尾 ----
+    // 到这里 Qt 侧（窗口、引擎、WebView2、偏好与最近文件落盘）已全部清理完毕。
+    // 但本机环境下退出会卡在 DLL 卸载（DllMain/PROCESS_DETACH）阶段：
+    // 一个只有空窗口的最小 Qt 程序同样如此，与 WebView2、菜单改造无关；
+    // 连 ExitProcess 都会被挂住十几秒到数十秒（见 readme「退出分析」）。
+    // 用户观感就是"关了窗口进程还在"。所有需要持久化的状态都已在运行期
+    // 即时落盘（closeEvent 里又补了偏好/最近文件），故直接结束进程。
+    qInfo("[退出] 强制结束进程，跳过挂起的 DLL 卸载阶段");
+    ::TerminateProcess(::GetCurrentProcess(), static_cast<UINT>(nExitCode));
+    return nExitCode;   // 不会到达
 }

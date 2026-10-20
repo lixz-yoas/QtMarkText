@@ -24,6 +24,8 @@
 #include <QColor>
 #include <QString>
 
+#include <functional>
+
 class QWidget;
 
 class WebView2Host : public QObject
@@ -69,6 +71,18 @@ public:
 
     /// 剪贴板编辑动作：cut / copy / paste（内部 = focusContent + sendCtrlKey）
     bool sendClipboardShortcut(const QString &sAction);
+
+    // ---- 菜单快捷键接管 ----
+    /// 装一个「组合键过滤器」：页面里按下按键时先问外壳要不要接管。
+    /// 返回 true = 外壳已处理，本次按键被吞掉（put_Handled(TRUE)，不再传给页面）；
+    /// 返回 false = 放行给页面/渲染层。
+    /// 为什么需要它：焦点在 WebView2 里时，按键消息直接进了 WebView2 自己的
+    /// HWND，Qt 的 QAction::shortcut 完全收不到——菜单上写着 Ctrl+S 却按不动。
+    /// 对齐 Electron 的做法：菜单 accelerator 由主进程统一分发。
+    void setShortcutFilter(std::function<bool(int nQtKey, int nQtModifiers)> fn);
+
+    /// Win32 虚拟键 → Qt::Key（无法映射返回 0）。字母/数字/F 键与 Qt 值同源。
+    static int qtKeyFromVirtualKey(unsigned int nVirtualKey);
 
     // ---- 导航 ----
     /// 把虚拟主机名映射到本地目录，从而可以用 https 源加载本地静态资源
