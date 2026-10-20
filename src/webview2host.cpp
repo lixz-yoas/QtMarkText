@@ -897,6 +897,82 @@ void WebView2Host::setDefaultBackgroundColor(const QColor &color)
 }
 
 //=====================================================================
+//  键盘焦点 / 原生按键注入
+// ---------------------------------------------------------------------
+//  背景：ICoreWebView2 一直没有 SendKeyEvent（本机 SDK 头直到 22 版都没有，
+//        grep 计数 = 0），所以"复制/剪切/粘贴"这类必须由 Chromium 默认编辑
+//        行为完成的操作，只能在宿主侧用 Win32 SendInput 真按键。
+//  前提：按键会送到前台窗口的焦点窗口上，所以注入前必须
+//        (1) 把顶层窗口推到前台；(2) 让 WebView2 内容拿到键盘焦点。
+//        MoveFocus(PROGRAMMATIC) 正是 SDK 提供的"把焦点移进网页"入口。
+//=====================================================================
+bool WebView2Host::focusContent()
+{
+    if (!m_pImpl->bCtlOk || m_pImpl->pCtl == nullptr || m_pImpl->hwnd == nullptr) {
+        return false;
+    }
+
+    HWND hTop = GetAncestor(m_pImpl->hwnd, GA_ROOT);
+    if (hTop == nullptr) {
+        hTop = m_pImpl->hwnd;
+    }
+    if (hTop != nullptr && GetForegroundWindow() != hTop) {
+        SetForegroundWindow(hTop);
+    }
+
+    m_pImpl->pCtl->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    return true;
+}
+
+bool WebView2Host::sendCtrlKey(int nVirtualKey)
+{
+    if (!m_pImpl->bCtlOk) {
+        return false;
+    }
+
+    INPUT arrInput[4];
+    ZeroMemory(arrInput, sizeof(arrInput));
+
+    arrInput[0].type       = INPUT_KEYBOARD;
+    arrInput[0].ki.wVk     = VK_CONTROL;
+    arrInput[1].type       = INPUT_KEYBOARD;
+    arrInput[1].ki.wVk     = static_cast<WORD>(nVirtualKey);
+    arrInput[2].type       = INPUT_KEYBOARD;
+    arrInput[2].ki.wVk     = static_cast<WORD>(nVirtualKey);
+    arrInput[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    arrInput[3].type       = INPUT_KEYBOARD;
+    arrInput[3].ki.wVk     = VK_CONTROL;
+    arrInput[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    const UINT nSent = SendInput(4, arrInput, sizeof(INPUT));
+    if (nSent != 4) {
+        qWarning("WebView2: SendInput 注入失败（已发 %u/4），可能被 UIPI 拦截",
+                 static_cast<unsigned>(nSent));
+        return false;
+    }
+    return true;
+}
+
+bool WebView2Host::sendClipboardShortcut(const QString &sAction)
+{
+    int nVk = 0;
+    if (sAction == QLatin1String("cut")) {
+        nVk = 'X';
+    } else if (sAction == QLatin1String("copy")) {
+        nVk = 'C';
+    } else if (sAction == QLatin1String("paste")) {
+        nVk = 'V';
+    } else {
+        return false;
+    }
+
+    if (!focusContent()) {
+        return false;
+    }
+    return sendCtrlKey(nVk);
+}
+
+//=====================================================================
 //  导航
 //=====================================================================
 bool WebView2Host::mapVirtualHost(const QString &sHostName, const QString &sFolderPath)

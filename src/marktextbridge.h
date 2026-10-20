@@ -118,6 +118,10 @@ private:
     QString readLocaleJson(const QString &sLanguage) const;
     /// write-file / output-file 的公共落盘实现（数据可能是字符串或二进制标记）
     bool writeFileFromArgs(const QJsonArray &arrArgs);
+    /// 渲染层 mt::response-file-save / -save-as：把渲染层发回的 markdown 落盘，
+    /// 并按"新文件 / 覆盖保存"回 mt::set-pathname 或 mt::tab-saved。
+    /// 参数顺序：id, filename, pathname, markdown, options, defaultPath
+    void handleFileSaveRequest(const QJsonArray &arrArgs, bool bSaveAs);
 
     /// 未实现通道的统一兜底：记日志并按命名给出安全默认值
     QJsonValue fallbackInvoke(const QString &sChannel, const QJsonArray &arrArgs);

@@ -55,6 +55,21 @@ public:
     /// 用途：页面加载完成前的"闪白"窗口期，让底色与当前主题的编辑器背景一致。
     void setDefaultBackgroundColor(const QColor &color);
 
+    // ---- 键盘焦点 / 原生按键注入 ----
+    /// 把键盘焦点交给 WebView2 页面内容，并确保本窗口在前台。
+    /// 用途：ICoreWebView2 没有 SendKeyEvent（本机 SDK 头 22 版均无），
+    ///       剪贴板这类必须由 Chromium 默认编辑行为完成的操作只能靠
+    ///       Win32 SendInput 真按键，而注入前必须让页面拿到焦点。
+    /// 返回 true 表示已尝试（控制器就绪）。
+    bool focusContent();
+
+    /// 注入一次「Ctrl + 指定虚拟键」（如 VK_C 复制）。nVirtualKey 用 Win32 VK_*。
+    /// 调用前应先 focusContent()，否则按键会落到别的控件上。
+    bool sendCtrlKey(int nVirtualKey);
+
+    /// 剪贴板编辑动作：cut / copy / paste（内部 = focusContent + sendCtrlKey）
+    bool sendClipboardShortcut(const QString &sAction);
+
     // ---- 导航 ----
     /// 把虚拟主机名映射到本地目录，从而可以用 https 源加载本地静态资源
     bool mapVirtualHost(const QString &sHostName, const QString &sFolderPath);

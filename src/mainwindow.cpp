@@ -17,6 +17,7 @@
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QInputDialog>
+#include <QJsonArray>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -171,13 +172,13 @@ MainWindow::MainWindow(QWidget *pParent)
     applyShellTheme();
 
     // ---- 外壳视觉对齐 MarkText（v0.19.1 Windows）----
-    // MarkText 的菜单栏/标签栏/侧栏/状态栏全部由渲染层自绘，外壳只提供窗口。
-    // 这里把 Qt 外壳自绘的这几块全部收起（功能保留）：
-    //   - 菜单栏：默认隐藏，按 Alt 呼出（与 MarkText 一致）
+    // MarkText 的标签栏/侧栏/状态栏全部由渲染层自绘，外壳只提供窗口：
     //   - 标签栏：渲染层有自己的 tab 栏
     //   - 文件 dock：渲染层有内置侧栏（openFolder）
     //   - 状态栏：渲染层有状态栏
-    menuBar()->setVisible(false);
+    // 菜单栏则改为**常驻显示**（2026-10-13 起）：渲染层的自绘菜单只在页面内，
+    // 外壳菜单栏放在窗口最上一行，常驻可见、按业界习惯可直接点。
+    menuBar()->setVisible(true);
     m_pTabWidget->tabBar()->setVisible(false);
     m_pFileDock->setVisible(false);
     statusBar()->setVisible(false);
@@ -195,8 +196,11 @@ MainWindow::~MainWindow()
 //=====================================================================
 void MainWindow::onAltPressed()
 {
-    // 对齐 MarkText：按 Alt 呼出/收起菜单栏；点完命令自动收起（见 commandTriggered）
-    menuBar()->setVisible(!menuBar()->isVisible());
+    // 菜单栏已改为常驻显示（见构造函数），Alt 不再用于收起；
+    // 这里只保证它处于可见状态，避免渲染层 Alt 事件把菜单栏关掉。
+    if (!menuBar()->isVisible()) {
+        menuBar()->setVisible(true);
+    }
 }
 
 #ifdef Q_OS_WIN
@@ -262,13 +266,7 @@ void MainWindow::createMenus()
     m_pMenu = new MarkTextMenu(menuBar(), this);
 
     // 状态栏要跟着配置走
-    connect(m_pMenu, &MarkTextMenu::commandTriggered, this, [this](const QString &sId) {
-        onMenuCommand(sId);
-        // 点完命令自动收起菜单栏（对齐 MarkText 菜单行为）
-        if (menuBar()->isVisible()) {
-            menuBar()->hide();
-        }
-    });
+    connect(m_pMenu, &MarkTextMenu::commandTriggered, this, &MainWindow::onMenuCommand);
     connect(m_pMenu, &MarkTextMenu::themeSelected, this, &MainWindow::onThemeSelected);
     connect(m_pMenu, &MarkTextMenu::followSystemThemeToggled,
             this, &MainWindow::onFollowSystemThemeToggled);
@@ -520,6 +518,44 @@ bool MainWindow::saveCurrentFile(bool bSaveAs)
     return true;
 }
 
+/**
+ * @brief 剪切 / 复制 / 粘贴 —— 渲染层引擎下改为原生按键注入
+ *
+ * 为什么不能走 mt::editor-edit-action：
+ *   原版 MarkText 的这三项由 Electron 主进程直接调 win.webContents.cut/copy/paste()，
+ *   渲染层压根没有对应的 emitter 监听（实测 emitter 上只有 undo/redo/selectAll/…）。
+ *   而 WebView2 的 ICoreWebView2 没有 SendKeyEvent（本机 SDK 头 22 版都没有），
+ *   所以只能：先把键盘焦点交给页面 → 再用 Win32 SendInput 注入 Ctrl+X/C/V，
+ *   让 Chromium 自己的默认编辑行为去操作选区与剪贴板。
+ *
+ * 占位引擎（QTextEdit）不需要这么绕，返回 false 让它走 execCommand 分支。
+ */
+bool MainWindow::dispatchClipboardCommand(const QString &sId)
+{
+    QString sAction;
+    if (sId == QLatin1String("cutMenuItem")) {
+        sAction = QStringLiteral("cut");
+    } else if (sId == QLatin1String("copyMenuItem")) {
+        sAction = QStringLiteral("copy");
+    } else if (sId == QLatin1String("pasteMenuItem")) {
+        sAction = QStringLiteral("paste");
+    } else {
+        return false;
+    }
+
+    IEditorEngine *pEngine = currentEngine();
+    WebView2EditorEngine *pWv2 = qobject_cast<WebView2EditorEngine *>(pEngine);
+    if (pWv2 == nullptr) {
+        return false;   // 占位引擎：交回 execCommand 走 Qt 剪贴板
+    }
+
+    if (!pWv2->nativeEdit(sAction)) {
+        statusBar()->showMessage(
+            QStringLiteral("剪贴板操作不可用：WebView2 尚未就绪"), 3000);
+    }
+    return true;
+}
+
 void MainWindow::exportCurrentAsHtml()
 {
     IEditorEngine *pEngine = currentEngine();
@@ -731,6 +767,31 @@ void MainWindow::onRecentFileActivated(const QString &sPath)
 //=====================================================================
 void MainWindow::onMenuCommand(const QString &sId)
 {
+    // ---------------- 渲染层优先（外壳与渲染层都实现同一件事时）----------------
+    // 文档内容、标签页、导出/打印对话框都在渲染层手里；外壳若抢着做，
+    // 轻则做了没用（外壳侧的文件 dock 已隐藏），重则出错——
+    // 例如"保存"：外壳的 markdownText() 对渲染层引擎返回空串，
+    // 直接落盘会把用户文件清空（MarkTextBridge 已接管 mt::response-file-save，
+    // 真正的落盘在那边完成）。渲染层没有对应路由时 routeMenuCommand 返回 false，
+    // 继续往下走外壳自己的实现（占位引擎场景）。
+    static const char *const kRendererFirst[] = {
+        "newTabMenuItem", "saveMenuItem", "saveAsMenuItem",
+        "moveToMenuItem", "renameMenuItem", "importMenuItem",
+        "exportHtmlMenuItem", "exportPdfMenuItem", "printMenuItem",
+        "closeTabMenuItem"
+    };
+    for (const char *pszId : kRendererFirst) {
+        if (sId != QLatin1String(pszId)) {
+            continue;
+        }
+        IEditorEngine *pEngine = currentEngine();
+        MarkTextBridge *pBridge = (pEngine != nullptr) ? pEngine->bridge() : nullptr;
+        if (pBridge != nullptr && pBridge->routeMenuCommand(sId)) {
+            return;   // 已转交渲染层，外壳不再插手
+        }
+        break;
+    }
+
     // ---------------- 文件 ----------------
     if (sId == QLatin1String("newTabMenuItem")) {
         addEditorTab();
@@ -756,7 +817,17 @@ void MainWindow::onMenuCommand(const QString &sId)
             this, QStringLiteral("打开文件夹"), m_sLastDir);
         if (!sDir.isEmpty()) {
             m_sLastDir = sDir;
-            m_pFileTree->setRootIndex(m_pFileModel->index(sDir));
+            // 渲染层引擎：把目录交给渲染层的项目树（对照主进程的
+            //   ipcMain → win.webContents.send('mt::open-directory', pathname)
+            // 渲染层收到后 OPEN_PROJECT(pathname)，侧栏与项目树由它自己管）。
+            IEditorEngine *pEngine = currentEngine();
+            MarkTextBridge *pBridge = (pEngine != nullptr) ? pEngine->bridge() : nullptr;
+            if (pBridge != nullptr) {
+                pBridge->emitToRenderer(QStringLiteral("mt::open-directory"),
+                                        QJsonArray{ QDir::toNativeSeparators(sDir) });
+            } else {
+                m_pFileTree->setRootIndex(m_pFileModel->index(sDir));
+            }
             statusBar()->showMessage(QStringLiteral("已打开文件夹：%1").arg(sDir), 5000);
         }
         return;
@@ -827,6 +898,16 @@ void MainWindow::onMenuCommand(const QString &sId)
     }
     if (sId == QLatin1String("menu.file.clearRecentlyUsed")) {
         clearRecentFiles();
+        return;
+    }
+
+    // ---------------- 编辑：剪切 / 复制 / 粘贴 ----------------
+    // 渲染层只监听 mt::editor-edit-action 里的 undo/redo/selectAll/… 这些；
+    // cut/copy/paste 在原版 MarkText 里走 Electron 原生
+    // win.webContents.cut()/copy()/paste()（见 main/menu/actions/edit.ts），
+    // 渲染层没有任何对应监听。于是 WebView2 引擎下由外壳注入 Ctrl+X/C/V，
+    // 占位引擎则返回 false、走下面 execCommand 分支的 Qt 剪贴板。
+    if (dispatchClipboardCommand(sId)) {
         return;
     }
 
@@ -1016,6 +1097,8 @@ void MainWindow::applyShellTheme()
         qApp->setPalette(qApp->style()->standardPalette());
         // 浅色主题（或跟随系统）下编辑器背景为白色
         applyEngineHostBackground(lightEditorBackground());
+        // 菜单栏还原系统默认观感（清掉深色 QSS）
+        applyMenuBarStyle(false);
         return;
     }
 
@@ -1040,6 +1123,56 @@ void MainWindow::applyShellTheme()
 
     // 同一主题的编辑器背景同步给 WebView2 宿主（加载前底色 / 缝隙色）
     applyEngineHostBackground(colors.cEditorBg);
+
+    // 菜单栏常驻后必须自带配色：Windows 原生样式下 QPalette 管不到
+    // QMenuBar::item，只能用 QSS 精确上色（黑底白字）。
+    applyMenuBarStyle(true);
+}
+
+/**
+ * @brief 给菜单栏与它的弹出菜单上色
+ *
+ * 为什么用 QSS 而不是 QPalette：
+ *   Windows（windowsvista 样式）下 QMenuBar 的条目背景由样式引擎自己画，
+ *   QPalette::Window/WindowText 对它基本无效；只有 QSS 能稳定改掉。
+ *
+ * QSS 只挂在 menuBar() 上：MarkTextMenu 里所有 QMenu 都是它的（孙）子对象，
+ * Qt 的样式表会沿对象树级联，故弹出菜单、子菜单一并生效，不必动全局样式表。
+ */
+void MainWindow::applyMenuBarStyle(bool bDark)
+{
+    QMenuBar *pBar = menuBar();
+    if (pBar == nullptr) {
+        return;
+    }
+
+    if (!bDark) {
+        pBar->setStyleSheet(QString());
+        return;
+    }
+
+    const ShellThemeColors &colors = shellColorsForTheme(
+        m_pStore->stringValue(QStringLiteral("theme")));
+
+    const QString sBg     = colors.cWindow.name();            // 菜单底色（黑）
+    const QString sText   = colors.cText.name();              // 菜单文字（近白）
+    const QString sSel    = colors.cHighlight.name();         // 选中高亮
+    const QString sSelTxt = colors.cHighlightText.name();   // 高亮上的文字
+    const QString sBorder = colors.cBase.lighter(160).name(); // 弹出菜单描边
+    const QString sDis    = colors.cDisabledText.name();      // 禁用项文字
+
+    pBar->setStyleSheet(QStringLiteral(
+        "QMenuBar{background:%1;color:%2;border:none;padding:0px;}"
+        "QMenuBar::item{background:transparent;color:%2;padding:5px 12px;}"
+        "QMenuBar::item:selected{background:%3;color:%4;}"
+        "QMenuBar::item:pressed{background:%3;color:%4;}"
+        "QMenu{background:%1;color:%2;border:1px solid %5;padding:4px 0px;}"
+        "QMenu::item{background:transparent;color:%2;padding:5px 30px 5px 28px;}"
+        "QMenu::item:selected{background:%3;color:%4;}"
+        "QMenu::item:disabled{color:%6;}"
+        "QMenu::separator{height:1px;background:%5;margin:4px 10px;}"
+        "QMenu::right-arrow{width:8px;height:8px;}")
+        .arg(sBg, sText, sSel, sSelTxt, sBorder, sDis));
 }
 
 void MainWindow::applyEngineHostBackground(const QColor &color)

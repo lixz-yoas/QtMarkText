@@ -81,6 +81,11 @@ private:
 
     // ---- 文件 ----
     bool saveCurrentFile(bool bSaveAs);
+    /// 剪切/复制/粘贴：渲染层只监听 mt::editor-edit-action 的 undo/redo/… 这些，
+    /// cut/copy/paste 在原版 MarkText 里走 Electron 原生 webContents.cut/copy/paste，
+    /// 渲染层没有任何对应监听。故 WebView2 引擎下由外壳注入 Ctrl+X/C/V。
+    /// 返回 true 表示本条命令已被本函数消化。
+    bool dispatchClipboardCommand(const QString &sId);
     void exportCurrentAsHtml();
     void exportCurrentAsPdf();
     void moveCurrentFile();
@@ -100,6 +105,9 @@ private:
     void syncViewMenu();
     void syncThemeMenu();
     void applyShellTheme();
+    /// 深色主题下给菜单栏与弹出菜单上色（黑底白字）；
+    /// 浅色主题清空 QSS，还原系统默认观感。
+    void applyMenuBarStyle(bool bDark);
     /// 把当前主题的编辑器背景色同步到各 WebView2 引擎宿主
     /// （view palette + WebView2 默认背景色，消除加载闪白与色差边）
     void applyEngineHostBackground(const QColor &color);

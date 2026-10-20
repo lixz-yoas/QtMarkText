@@ -20,12 +20,14 @@
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QRegExp>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QTextCodec>
@@ -771,6 +773,166 @@ void MarkTextBridge::registerInvokeHandlers()
 }
 
 //=====================================================================
+//  保存落盘：渲染层 mt::response-file-save / -save-as 的实现
+// ---------------------------------------------------------------------
+//  为什么必须由本层落盘：
+//    渲染层的文档模型（Muya）持有正文，外壳的 markdownText() 是空串。
+//    保存链路必须是：
+//      [外壳菜单/快捷键] → mt::editor-ask-file-save
+//        → 渲染层 FILE_SAVE() 把自己那份 markdown 发回来
+//        → mt::response-file-save(id, filename, pathname, markdown, options, defaultPath)
+//        → 本函数写盘 → 回 mt::set-pathname（新文件）或 mt::tab-saved（已存在）
+//    若绕过这条链路直接让外壳写文件，会把用户文件清空（历史隐患，已修）。
+//  对照：packages/desktop/src/main/menu/actions/file.ts
+//        - handleResponseForSave / ipcMain.on('mt::response-file-save-as')
+//        - filesystem/markdown.ts: writeMarkdownFile
+//=====================================================================
+
+namespace {
+
+/// 从正文推荐文件名：取层级最高的标题（对照 main/utils/index.ts）
+QString recommendTitleFromMarkdown(const QString &sMarkdown)
+{
+    // 匹配行首 1~6 个 '#' + 空格 + 标题内容（与上游正则等价，逐行更直观）
+    QString sBest;
+    int nBestLevel = 99;
+    const QStringList listLines = sMarkdown.split(QLatin1Char('\n'));
+    for (const QString &sLine : listLines) {
+        const QString sTrim = sLine.trimmed();
+        if (sTrim.isEmpty() || sTrim.at(0) != QLatin1Char('#')) {
+            continue;
+        }
+        int nLevel = 0;
+        while (nLevel < sTrim.length() && sTrim.at(nLevel) == QLatin1Char('#')) {
+            ++nLevel;
+        }
+        if (nLevel < 1 || nLevel > 6 || nLevel >= sTrim.length()
+                || sTrim.at(nLevel) != QLatin1Char(' ')) {
+            continue;
+        }
+        const QString sContent = sTrim.mid(nLevel + 1).trimmed();
+        if (sContent.isEmpty()) {
+            continue;
+        }
+        if (nLevel < nBestLevel) {
+            nBestLevel = nLevel;
+            sBest = sContent;
+        }
+    }
+    return sBest;
+}
+
+/// 去掉文件名里 Windows 不允许的字符
+QString sanitizeFileName(const QString &sName)
+{
+    QString sOut = sName;
+    static const char *const kBad = "\\/:*?\"<>|";
+    for (const char *p = kBad; *p != '\0'; ++p) {
+        sOut.remove(QLatin1Char(*p));
+    }
+    sOut = sOut.trimmed();
+    while (sOut.endsWith(QLatin1Char('.'))) {
+        sOut.chop(1);
+    }
+    return sOut;
+}
+
+/// iconv-lite 的编码名 -> QTextCodec 名（渲染层 options.encoding.encoding 来自此处命名）
+QTextCodec *codecForMarkTextEncoding(const QString &sEncoding)
+{
+    static const struct { const char *pszMarkText; const char *pszQt; } kMap[] = {
+        { "utf8",      "UTF-8" },
+        { "utf16le",   "UTF-16LE" },
+        { "utf16be",   "UTF-16BE" },
+        { "gbk",       "GBK" },
+        { "gb18030",   "GB18030" },
+        { "big5",      "Big5" },
+        { "big5hkscs", "Big5-HKSCS" },
+        { "shiftjis",  "Shift-JIS" },
+        { "eucjp",     "EUC-JP" },
+        { "euckr",     "EUC-KR" },
+        { "latin1",    "ISO-8859-1" },
+        { "latin2",    "ISO-8859-2" },
+        { "latin5",    "ISO-8859-9" },
+        { "koi8r",     "KOI8-R" },
+        { "cp1251",    "Windows-1251" },
+        { "cp850",     "IBM850" },
+        { "cp866",     "IBM866" }
+    };
+    const QString sLower = sEncoding.toLower();
+    for (const auto &kv : kMap) {
+        if (sLower == QLatin1String(kv.pszMarkText)) {
+            return QTextCodec::codecForName(kv.pszQt);
+        }
+    }
+    return QTextCodec::codecForName(sEncoding.toLatin1());
+}
+
+/// 按渲染层给的 options 写 Markdown 文件（对照 filesystem/markdown.ts: writeMarkdownFile）
+bool writeMarkdownFileWithOptions(const QString &sPathname, const QString &sMarkdown,
+                                  const QJsonObject &objOptions, QString *pszError)
+{
+    QString sContent = sMarkdown;
+
+    // 行尾：只有"保存时调整行尾"打开才统一
+    const QString sLineEnding = objOptions.value(QStringLiteral("lineEnding")).toString();
+    if (objOptions.value(QStringLiteral("adjustLineEndingOnSave")).toBool()) {
+        if (sLineEnding == QLatin1String("crlf")) {
+            sContent.replace(QRegExp(QStringLiteral("\r\n|\r|\n")), QStringLiteral("\r\n"));
+        } else {
+            sContent.replace(QRegExp(QStringLiteral("\r\n|\r|\n")), QStringLiteral("\n"));
+        }
+    }
+    // 尾部空行：MarkText 的 trimTrailingNewline 语义（>=1 表示保留 N 个换行）
+    const int nTrim = objOptions.value(QStringLiteral("trimTrailingNewline")).toInt();
+    if (nTrim >= 0) {
+        const QString sEol = (sLineEnding == QLatin1String("crlf"))
+                                 ? QStringLiteral("\r\n") : QStringLiteral("\n");
+        while (sContent.endsWith(sEol + sEol)) {
+            sContent.chop(sEol.length());
+        }
+        while (sContent.endsWith(QStringLiteral("\n")) || sContent.endsWith(QStringLiteral("\r"))) {
+            sContent.chop(1);
+        }
+        sContent += sEol;
+    }
+
+    // 编码
+    const QJsonObject objEncoding = objOptions.value(QStringLiteral("encoding")).toObject();
+    const QString sEncoding = objEncoding.value(QStringLiteral("encoding"))
+                                  .toString(QStringLiteral("utf8"));
+    const bool bBom = objEncoding.value(QStringLiteral("isBom")).toBool();
+    QTextCodec *pCodec = codecForMarkTextEncoding(sEncoding);
+    if (pCodec == nullptr) {
+        pCodec = QTextCodec::codecForName("UTF-8");
+    }
+    QByteArray bytes = pCodec != nullptr ? pCodec->fromUnicode(sContent)
+                                         : sContent.toUtf8();
+    if (bBom && !bytes.startsWith("\xEF\xBB\xBF")) {
+        bytes.prepend("\xEF\xBB\xBF");
+    }
+
+    QFile file(sPathname);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (pszError != nullptr) {
+            *pszError = file.errorString();
+        }
+        return false;
+    }
+    const qint64 nWritten = file.write(bytes);
+    file.close();
+    if (nWritten != bytes.size()) {
+        if (pszError != nullptr) {
+            *pszError = QStringLiteral("写入不完整");
+        }
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+//=====================================================================
 //  send 通道登记
 //=====================================================================
 void MarkTextBridge::registerSendHandlers()
@@ -907,6 +1069,17 @@ void MarkTextBridge::registerSendHandlers()
     m_hashSend.insert(QStringLiteral("mt::select-default-directory-to-open"),
                       [this](const QJsonArray &) {
                           emit shellActionRequested(QStringLiteral("open-directory"));
+                      });
+
+    // ---- 保存落盘（渲染层 FILE_SAVE / FILE_SAVE_AS 的回执）----
+    // 渲染层把自己持有的 markdown 发回来，这里落盘并回报结果。
+    m_hashSend.insert(QStringLiteral("mt::response-file-save"),
+                      [this](const QJsonArray &arrArgs) {
+                          handleFileSaveRequest(arrArgs, false);
+                      });
+    m_hashSend.insert(QStringLiteral("mt::response-file-save-as"),
+                      [this](const QJsonArray &arrArgs) {
+                          handleFileSaveRequest(arrArgs, true);
                       });
 
     // ---- 命令类（qt 菜单已直接路由，这里兜底）----
@@ -1104,6 +1277,97 @@ void MarkTextBridge::sendBootstrapEditor()
 }
 
 //=====================================================================
+//  保存落盘：渲染层 mt::response-file-save / -save-as 的处理
+//  参数：id, filename, pathname, markdown, options, defaultPath
+//=====================================================================
+void MarkTextBridge::handleFileSaveRequest(const QJsonArray &arrArgs, bool bSaveAs)
+{
+    const QString sId       = arrArgs.at(0).toString();
+    const QString sFilename = arrArgs.at(1).toString();
+    const QString sPathname = arrArgs.at(2).toString();
+    const QString sMarkdown = arrArgs.at(3).toString();
+    const QJsonObject objOptions = arrArgs.at(4).toObject();
+    const QString sDefaultPath   = arrArgs.at(5).toString();
+
+    if (sId.isEmpty()) {
+        emit logMessage(QStringLiteral("warn"),
+                        QStringLiteral("保存请求缺少 tab id，已忽略"));
+        return;
+    }
+
+    // 推荐文件名：正文里的最高级标题 → 文件名 → Untitled
+    QString sRecommend = sanitizeFileName(recommendTitleFromMarkdown(sMarkdown));
+    if (sRecommend.isEmpty()) {
+        sRecommend = sanitizeFileName(sFilename);
+    }
+    if (sRecommend.isEmpty()) {
+        sRecommend = QStringLiteral("Untitled");
+    }
+
+    // 文件是否已经在磁盘上（有 pathname 即已存在）
+    const bool bAlreadyOnDisk = !sPathname.isEmpty();
+
+    QString sFilePath = sPathname;
+    if (bSaveAs || sFilePath.isEmpty()) {
+        // 「另存为」永远弹框；普通「保存」只在还没有路径时弹框
+        QString sDefault;
+        if (bSaveAs && bAlreadyOnDisk) {
+            sDefault = sPathname;
+        } else {
+            QString sDir = sDefaultPath;
+            if (sDir.isEmpty()) {
+                sDir = QDir::homePath();
+            }
+            sDefault = QDir(sDir).filePath(sRecommend + QStringLiteral(".md"));
+        }
+
+        sFilePath = QFileDialog::getSaveFileName(
+            m_pShellWindow,
+            bSaveAs ? QStringLiteral("另存为 Markdown 文件")
+                    : QStringLiteral("保存 Markdown 文件"),
+            sDefault,
+            QStringLiteral("Markdown 文件 (*.md *.markdown);;所有文件 (*.*)"));
+        if (sFilePath.isEmpty()) {
+            // 用户取消：与上游一致，静默返回（不发失败通知）
+            emit logMessage(QStringLiteral("info"), QStringLiteral("保存对话框被取消"));
+            return;
+        }
+    }
+
+    sFilePath = QDir::fromNativeSeparators(sFilePath);
+    if (QFileInfo(sFilePath).suffix().isEmpty()) {
+        sFilePath += QStringLiteral(".md");
+    }
+
+    QString sError;
+    if (!writeMarkdownFileWithOptions(sFilePath, sMarkdown, objOptions, &sError)) {
+        emit logMessage(QStringLiteral("error"),
+                        QStringLiteral("保存失败 %1：%2").arg(sFilePath, sError));
+        emitToRenderer(QStringLiteral("mt::tab-save-failure"),
+                       QJsonArray{ sId, sError });
+        return;
+    }
+
+    const QString sNativePath = QDir::toNativeSeparators(QFileInfo(sFilePath).absoluteFilePath());
+    const QString sNewName = QFileInfo(sFilePath).fileName();
+
+    if (!bAlreadyOnDisk || QDir::fromNativeSeparators(sPathname) != sFilePath) {
+        // 新文件（或另存到新位置）：告诉渲染层换路径/文件名
+        QJsonObject objPath;
+        objPath.insert(QStringLiteral("id"), sId);
+        objPath.insert(QStringLiteral("pathname"), sNativePath);
+        objPath.insert(QStringLiteral("filename"), sNewName);
+        emitToRenderer(QStringLiteral("mt::set-pathname"), QJsonArray{ objPath });
+    } else {
+        // 原路径覆盖保存：只回报"已保存"
+        emitToRenderer(QStringLiteral("mt::tab-saved"), QJsonArray{ sId });
+    }
+
+    emit logMessage(QStringLiteral("info"),
+                    QStringLiteral("已保存：%1").arg(sNativePath));
+}
+
+//=====================================================================
 //  菜单命令路由（对照 main/menu/actions/*.ts + templates/*.ts）
 //=====================================================================
 namespace {
@@ -1170,20 +1434,26 @@ const MenuRoute kEditRoutes[] = {
     { "findMenuItem",          "mt::editor-edit-action", "find" },
     { "findNextMenuItem",      "mt::editor-edit-action", "findNext" },
     { "findPreviousMenuItem",  "mt::editor-edit-action", "findPrev" },
-    { "findInFolderMenuItem",  "mt::editor-edit-action", "findInFolder" }
+    { "findInFolderMenuItem",  "mt::editor-edit-action", "findInFolder" },
+    // 替换：渲染层命令表里 delete "edit.replace" 就是 emitter.emit("replace","replace")，
+    // 而 EDITOR_EDIT_ACTION(type) = emitter.emit(type, type)，所以这里同一条通路即可。
+    // （上游 edit.ts 的 editorReplace 误写成 edit(win,'undo')，此处按渲染层真实语义修正。）
+    { "replaceMenuItem",       "mt::editor-edit-action", "replace" }
 };
 
 } // namespace
 
 bool MarkTextBridge::routeMenuCommand(const QString &sMenuId)
 {
-    // 1) 段落 / 格式 / 编辑三类：id -> type 表
-    const struct { const MenuRoute *pArray; int nCount; } arrTables[] = {
+    // 1a) 段落 / 格式两类：id -> { type: ... } 对象
+    //     渲染层侧：on("mt::editor-format-action", (_e, { type }) => emitter.emit("format", type))
+    //               on("mt::editor-paragraph-action", (_e, { type }) => emitter.emit("paragraph", type))
+    //     解构取 type，故**必须是对象**。
+    const struct { const MenuRoute *pArray; int nCount; } arrObjTables[] = {
         { kParagraphRoutes, int(sizeof(kParagraphRoutes) / sizeof(kParagraphRoutes[0])) },
-        { kFormatRoutes,    int(sizeof(kFormatRoutes) / sizeof(kFormatRoutes[0])) },
-        { kEditRoutes,      int(sizeof(kEditRoutes) / sizeof(kEditRoutes[0])) }
+        { kFormatRoutes,    int(sizeof(kFormatRoutes) / sizeof(kFormatRoutes[0])) }
     };
-    for (const auto &table : arrTables) {
+    for (const auto &table : arrObjTables) {
         for (int i = 0; i < table.nCount; ++i) {
             if (sMenuId == QLatin1String(table.pArray[i].pszMenuId)) {
                 QJsonObject objPayload;
@@ -1194,6 +1464,20 @@ bool MarkTextBridge::routeMenuCommand(const QString &sMenuId)
                 return true;
             }
         }
+    }
+
+    // 1b) 编辑类：id -> 裸字符串
+    //     渲染层侧：on("mt::editor-edit-action", (_e, type) => EDITOR_EDIT_ACTION(type))
+    //     直接取第二个参数当字符串用；若包成 { type: ... } 会变成 "[object Object]"，
+    //     命令全部落空（实测现象：点了"撤销"毫无反应且无报错）。
+    //     MarkText 主进程自己也是这么发的：webContents.send('mt::editor-edit-action', type)。
+    for (int i = 0; i < int(sizeof(kEditRoutes) / sizeof(kEditRoutes[0])); ++i) {
+        if (sMenuId != QLatin1String(kEditRoutes[i].pszMenuId)) {
+            continue;
+        }
+        emitToRenderer(QLatin1String(kEditRoutes[i].pszChannel),
+                       QJsonArray{ QLatin1String(kEditRoutes[i].pszType) });
+        return true;
     }
 
     // 2) 视图类（对照 actions/view.ts）

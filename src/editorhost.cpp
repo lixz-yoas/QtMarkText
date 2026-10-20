@@ -384,6 +384,26 @@ bool WebView2EditorEngine::isRendererReady() const
     return m_pBridge != nullptr && m_pBridge->isRendererReady();
 }
 
+bool WebView2EditorEngine::nativeEdit(const QString &sAction)
+{
+    if (m_pHost == nullptr) {
+        return false;
+    }
+    if (sAction != QLatin1String("cut") && sAction != QLatin1String("copy")
+            && sAction != QLatin1String("paste")) {
+        return false;
+    }
+
+    // 为什么要延后一帧：菜单（QMenu）关闭时 Qt 会把焦点还给先前持有焦点的控件，
+    // 若在同一拍里"抢焦点 + 注入按键"，按键可能落到 Qt 控件而不是网页上。
+    // 用宿主自身当上下文对象：宿主析构则定时器自动取消，不会野指针。
+    WebView2Host *pHost = m_pHost;
+    QTimer::singleShot(30, pHost, [pHost, sAction]() {
+        pHost->sendClipboardShortcut(sAction);
+    });
+    return true;
+}
+
 void WebView2EditorEngine::setViewBackground(const QColor &color)
 {
     if (!color.isValid()) {

@@ -154,6 +154,12 @@ public:
     /// 渲染层是否就绪
     bool isRendererReady() const;
 
+    /// 剪切/复制/粘贴（sAction = "cut" / "copy" / "paste"）。
+    /// 这三项渲染层不监听（原版 MarkText 走 Electron 原生 webContents.cut/copy/paste），
+    /// 故改为：延后一帧 → 抢回页面焦点 → Win32 SendInput 注入 Ctrl+X/C/V。
+    /// 返回 false 表示 WebView2 宿主未就绪。
+    bool nativeEdit(const QString &sAction);
+
     /// 设置宿主底色：view 控件 palette + WebView2 默认背景色一起换，
     /// 保证加载间隙/未覆盖区域与当前主题的编辑器背景一致（消除闪白与色差边）。
     void setViewBackground(const QColor &color);

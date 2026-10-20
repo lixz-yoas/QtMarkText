@@ -88,12 +88,14 @@ def grab(hwnd, out_path):
     data = (ctypes.c_ubyte * (row_bytes * h)).from_address(bits.value)
 
     # BMP 文件头
+    # 注意：上面申请 DIB 时 biHeight 传的是 -h（自上而下），PrintWindow 按这个
+    # 方向回填像素；文件头必须同样写 -h，否则看图工具会把整张图上下颠倒。
     import struct
     pixel_off = 14 + 40
     file_size = pixel_off + row_bytes * h
     fh = bytearray()
     fh += b"BM" + struct.pack("<IHHI", file_size, 0, 0, pixel_off)
-    fh += struct.pack("<IiiHHIIiiII", 40, w, h, 1, 32, 0, row_bytes * h, 0, 0, 0, 0)
+    fh += struct.pack("<IiiHHIIiiII", 40, w, -h, 1, 32, 0, row_bytes * h, 0, 0, 0, 0)
 
     with open(bmp_path, "wb") as f:
         f.write(fh)
@@ -115,7 +117,22 @@ def main():
         proc = subprocess.Popen([exe])
     time.sleep(wait_s)
 
-    wins = find_window(keyword)
+    # keyword 也可以直接给窗口句柄（十进制或 0x 前缀）：
+    # 中文窗口标题经 shell 传参会因代码页丢失，用句柄最稳。
+    wins = []
+    sKey = keyword.strip()
+    if sKey.isdigit() or sKey.lower().startswith("0x"):
+        hwnd = int(sKey, 0)
+        if not user32.IsWindow(hwnd):
+            print("NO_WINDOW for hwnd:", sKey)
+            return 2
+        length = user32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        wins.append((hwnd, buf.value))
+    else:
+        wins = find_window(keyword)
+
     if not wins:
         print("NO_WINDOW found for keyword:", keyword)
         return 2
