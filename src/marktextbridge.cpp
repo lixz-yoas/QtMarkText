@@ -12,6 +12,8 @@
 
 #include "marktextbridge.h"
 
+#include "marktextthemes.h"
+
 #include <QApplication>
 #include <QByteArray>
 #include <QClipboard>
@@ -291,7 +293,12 @@ QString MarkTextBridge::startUrl() const
                        QString::number(prefInt("codeFontSize", 14)));
     query.addQueryItem(QStringLiteral("hsb"),
                        prefBool("hideScrollbar", false) ? QStringLiteral("1") : QStringLiteral("0"));
-    query.addQueryItem(QStringLiteral("theme"), prefStr("theme", "light"));
+    query.addQueryItem(QStringLiteral("theme"),
+                       MarkTextThemes::effectiveThemeId(
+                           prefStr("theme", "light"),
+                           prefBool("followSystemTheme", true),
+                           prefStr("lightModeTheme", "light"),
+                           prefStr("darkModeTheme", "dark")));
     query.addQueryItem(QStringLiteral("tbs"), prefStr("titleBarStyle", "custom"));
 
     url.setQuery(query);
@@ -328,6 +335,24 @@ QJsonObject MarkTextBridge::bootInfo() const
     obj.insert(QStringLiteral("paths"), objPaths);
     obj.insert(QStringLiteral("isUpdatable"), false);
     obj.insert(QStringLiteral("MARKDOWN_INCLUSIONS"), arrInclusions);
+    return obj;
+}
+
+QJsonObject MarkTextBridge::preferenceObjectForRenderer() const
+{
+    QJsonObject obj;
+    if (m_pStore != nullptr) {
+        obj = QJsonObject::fromVariantMap(m_pStore->all());
+        // theme 必须是"生效主题"：开启跟随系统后，preference.theme 只是选中的值，
+        // 真正要加载的是 lightModeTheme / darkModeTheme 之一（原版由 Electron
+        // 主进程的 nativeTheme 解析，本工程在 MarkTextThemes 里做同一件事）。
+        obj.insert(QStringLiteral("theme"),
+                   MarkTextThemes::effectiveThemeId(
+                       m_pStore->stringValue(QStringLiteral("theme")),
+                       m_pStore->boolValue(QStringLiteral("followSystemTheme")),
+                       m_pStore->stringValue(QStringLiteral("lightModeTheme")),
+                       m_pStore->stringValue(QStringLiteral("darkModeTheme"))));
+    }
     return obj;
 }
 
@@ -958,19 +983,13 @@ void MarkTextBridge::registerSendHandlers()
 
     // ---- 偏好设置 ----
     m_hashSend.insert(QStringLiteral("mt::ask-for-user-preference"), [this](const QJsonArray &) {
-        QJsonObject obj;
-        if (m_pStore != nullptr) {
-            obj = QJsonObject::fromVariantMap(m_pStore->all());
-        }
-        emitToRenderer(QStringLiteral("mt::user-preference"), QJsonArray{ obj });
+        emitToRenderer(QStringLiteral("mt::user-preference"),
+                       QJsonArray{ preferenceObjectForRenderer() });
     });
     m_hashSend.insert(QStringLiteral("mt::ask-for-user-data"), [this](const QJsonArray &) {
         // dataCenter 与 preferences 同名回包，这里给同一份（本工程无独立 dataCenter）
-        QJsonObject obj;
-        if (m_pStore != nullptr) {
-            obj = QJsonObject::fromVariantMap(m_pStore->all());
-        }
-        emitToRenderer(QStringLiteral("mt::user-preference"), QJsonArray{ obj });
+        emitToRenderer(QStringLiteral("mt::user-preference"),
+                       QJsonArray{ preferenceObjectForRenderer() });
     });
     m_hashSend.insert(QStringLiteral("mt::set-user-preference"), [this](const QJsonArray &arrArgs) {
         if (m_pStore == nullptr || arrArgs.isEmpty()) {

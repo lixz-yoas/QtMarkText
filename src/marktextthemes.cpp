@@ -1,5 +1,7 @@
 #include "marktextthemes.h"
 
+#include <QSettings>
+
 namespace MarkTextThemes {
 
 // 浅色主题（theme.ts 第 37~130 行）
@@ -44,5 +46,29 @@ const Entry kDarkThemes[] = {
     { "tokyo-night-storm", "Tokyo Night Storm" }
 };
 const int kDarkThemeCount = static_cast<int>(sizeof(kDarkThemes) / sizeof(kDarkThemes[0]));
+
+bool systemPrefersDark()
+{
+#ifdef Q_OS_WIN
+    // AppsUseLightTheme：1 = 浅色，0 = 深色。键不存在（Win7/8 等老系统）时按浅色。
+    // 用 QSettings 的 NativeFormat 直接读注册表，不额外引入 Win32 头。
+    QSettings reg(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows"
+                                 "\\CurrentVersion\\Themes\\Personalize"),
+                  QSettings::NativeFormat);
+    if (reg.contains(QStringLiteral("AppsUseLightTheme"))) {
+        return reg.value(QStringLiteral("AppsUseLightTheme")).toInt() == 0;
+    }
+#endif
+    return false;
+}
+
+QString effectiveThemeId(const QString &sTheme, bool bFollowSystemTheme,
+                         const QString &sLightModeTheme, const QString &sDarkModeTheme)
+{
+    if (!bFollowSystemTheme) {
+        return sTheme;
+    }
+    return systemPrefersDark() ? sDarkModeTheme : sLightModeTheme;
+}
 
 } // namespace MarkTextThemes

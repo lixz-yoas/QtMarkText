@@ -19,6 +19,8 @@
 #include <QFileSystemModel>
 #include <QInputDialog>
 #include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
@@ -390,10 +392,9 @@ IEditorEngine *MainWindow::addEditorTab()
 
     // 引擎创建晚于 applyShellTheme()，这里补一次当前主题的宿主底色
     {
-        const QString sTheme = m_pStore->stringValue(QStringLiteral("theme"));
-        const bool bFollow = m_pStore->boolValue(QStringLiteral("followSystemTheme"));
+        const QString sTheme = effectiveThemeId();
         QColor cEditorBg = lightEditorBackground();
-        if (!bFollow && isDarkThemeId(sTheme)) {
+        if (isDarkThemeId(sTheme)) {
             cEditorBg = shellColorsForTheme(sTheme).cEditorBg;
         }
         if (WebView2EditorEngine *pWv2 = qobject_cast<WebView2EditorEngine *>(pEngine)) {
@@ -421,6 +422,22 @@ IEditorEngine *MainWindow::addEditorTab()
     if (pEngine->bridge() != nullptr) {
         connect(pEngine->bridge(), &MarkTextBridge::windowActionRequested,
                 this, &MainWindow::onWindowAction);
+        // 渲染层启动时会用 mt::ask-for-user-preference 拉一遍偏好，其中 theme 是
+        // "选中的主题"原值；跟随系统时它不等于生效值，故就绪后再广播一次纠正。
+        connect(pEngine->bridge(), &MarkTextBridge::rendererReady,
+                this, &MainWindow::pushThemeToRenderer);
+        // 反方向：渲染层自己改了主题（命令面板 window.change-theme-*）时，
+        // 外壳的菜单栏/窗口配色要跟着换，否则会出现"编辑区变了、菜单栏没变"。
+        connect(pEngine->bridge(), &MarkTextBridge::preferenceChangedByRenderer,
+                this, [this](const QString &sKey, const QJsonValue &) {
+                    if (sKey == QLatin1String("theme")
+                            || sKey == QLatin1String("followSystemTheme")
+                            || sKey == QLatin1String("lightModeTheme")
+                            || sKey == QLatin1String("darkModeTheme")) {
+                        syncThemeMenu();
+                        applyShellTheme();
+                    }
+                });
     }
 
     connect(pEngine, &IEditorEngine::titleChanged, this, [this, pEngine]() {
@@ -1112,6 +1129,7 @@ void MainWindow::onThemeSelected(const QString &sThemeId)
     m_pStore->setValue(QStringLiteral("followSystemTheme"), false);
     syncThemeMenu();
     applyShellTheme();
+    pushThemeToRenderer();
     statusBar()->showMessage(QStringLiteral("主题已切换为：%1").arg(sThemeId), 3000);
 }
 
@@ -1120,12 +1138,14 @@ void MainWindow::onFollowSystemThemeToggled(bool bFollow)
     m_pStore->setValue(QStringLiteral("followSystemTheme"), bFollow);
     syncThemeMenu();
     applyShellTheme();
+    pushThemeToRenderer();
 }
 
 void MainWindow::onPreferencesThemeChanged(const QString &sThemeId, bool bFollowSystemTheme)
 {
     m_pMenu->applyThemeState(sThemeId, bFollowSystemTheme);
     applyShellTheme();
+    pushThemeToRenderer();
 }
 
 void MainWindow::onPreferencesLanguageChanged(const QString &sLanguage)
@@ -1185,20 +1205,54 @@ void MainWindow::syncViewMenu()
 
 void MainWindow::syncThemeMenu()
 {
+    // 菜单勾选的是"用户选中的主题"（preference.theme），不是跟随系统解析后的生效值，
+    // 故这里用原值。
     m_pMenu->applyThemeState(m_pStore->stringValue(QStringLiteral("theme")),
                              m_pStore->boolValue(QStringLiteral("followSystemTheme")));
+}
+
+QString MainWindow::effectiveThemeId() const
+{
+    return MarkTextThemes::effectiveThemeId(
+        m_pStore->stringValue(QStringLiteral("theme")),
+        m_pStore->boolValue(QStringLiteral("followSystemTheme")),
+        m_pStore->stringValue(QStringLiteral("lightModeTheme")),
+        m_pStore->stringValue(QStringLiteral("darkModeTheme")));
+}
+
+void MainWindow::pushThemeToRenderer()
+{
+    // 只发主题相关的四项：渲染层的 SET_USER_PREFERENCE 是"逐键赋值"，
+    // 发全量会把渲染层自己刚改过、尚未回传的项一并覆盖掉。
+    QJsonObject obj;
+    obj.insert(QStringLiteral("theme"), effectiveThemeId());
+    obj.insert(QStringLiteral("followSystemTheme"),
+               m_pStore->boolValue(QStringLiteral("followSystemTheme")));
+    obj.insert(QStringLiteral("lightModeTheme"),
+               m_pStore->stringValue(QStringLiteral("lightModeTheme")));
+    obj.insert(QStringLiteral("darkModeTheme"),
+               m_pStore->stringValue(QStringLiteral("darkModeTheme")));
+
+    const QList<IEditorEngine *> listEngines = findChildren<IEditorEngine *>();
+    for (IEditorEngine *pEngine : listEngines) {
+        if (pEngine != nullptr && pEngine->bridge() != nullptr) {
+            pEngine->bridge()->emitToRenderer(QStringLiteral("mt::user-preference"),
+                                              QJsonArray{ obj });
+        }
+    }
+    qInfo("[主题] 已广播到渲染层：theme=%s", qPrintable(obj.value(QStringLiteral("theme")).toString()));
 }
 
 void MainWindow::applyShellTheme()
 {
     // 只做"外壳自己那层"的明暗切换，真正的配色由渲染层加载主题 CSS 完成。
-    // 跟随系统 => 用 Qt 的默认调色板。
-    const bool bFollow = m_pStore->boolValue(QStringLiteral("followSystemTheme"));
-    const QString sTheme = m_pStore->stringValue(QStringLiteral("theme"));
+    // 开启「跟随系统主题」时先解析出生效主题（与原版 Electron 主进程的
+    // nativeTheme 解析同语义），再按同一套明暗逻辑走。
+    const QString sTheme = effectiveThemeId();
 
-    if (bFollow || !isDarkThemeId(sTheme)) {
+    if (!isDarkThemeId(sTheme)) {
         qApp->setPalette(qApp->style()->standardPalette());
-        // 浅色主题（或跟随系统）下编辑器背景为白色
+        // 浅色主题下编辑器背景为白色
         applyEngineHostBackground(lightEditorBackground());
         // 菜单栏还原系统默认观感（清掉深色 QSS）
         applyMenuBarStyle(false);
@@ -1254,8 +1308,8 @@ void MainWindow::applyMenuBarStyle(bool bDark)
         return;
     }
 
-    const ShellThemeColors &colors = shellColorsForTheme(
-        m_pStore->stringValue(QStringLiteral("theme")));
+    // 取"生效主题"的配色（跟随系统时是解析后的那个），保证菜单栏与编辑区一致
+    const ShellThemeColors &colors = shellColorsForTheme(effectiveThemeId());
 
     const QString sBg     = colors.cWindow.name();            // 菜单底色（黑）
     const QString sText   = colors.cText.name();              // 菜单文字（近白）

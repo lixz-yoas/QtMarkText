@@ -116,6 +116,14 @@ private:
     void syncViewMenu();
     void syncThemeMenu();
     void applyShellTheme();
+    /// 实际生效的主题 id（开启「跟随系统主题」时解析成 light/dark 里对应的那个）。
+    /// 渲染层要的是"生效值"，直接给它 preference.theme 会漏掉跟随系统这一层。
+    QString effectiveThemeId() const;
+    /// 把"实际生效的主题"广播给渲染层。
+    /// 渲染层的主题是 Vuex 的 theme 状态（watch 到变化才重新 addThemeStyle），
+    /// 而它只在启动时从 URL 的 theme= 参数读一次；外壳换主题若不广播，
+    /// 编辑区就得重启才换肤 —— 用户反馈的"改了回不去"正是这个原因。
+    void pushThemeToRenderer();
     /// 深色主题下给菜单栏与弹出菜单上色（黑底白字）；
     /// 浅色主题清空 QSS，还原系统默认观感。
     void applyMenuBarStyle(bool bDark);

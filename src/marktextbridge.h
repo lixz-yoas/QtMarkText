@@ -115,6 +115,10 @@ private:
     void sendReplyRaw(const QString &sJson);
 
     QJsonObject bootInfo() const;
+    /// 给渲染层的偏好表：内容与 store 全量一致，但 `theme` 换成"实际生效的主题"。
+    /// 渲染层拿到 followSystemTheme 并不会自己解析（原版这一步在 Electron 主进程
+    /// 用 nativeTheme 完成），故下发前必须先解析，否则跟随系统时会用错主题。
+    QJsonObject preferenceObjectForRenderer() const;
     QString readLocaleJson(const QString &sLanguage) const;
     /// write-file / output-file 的公共落盘实现（数据可能是字符串或二进制标记）
     bool writeFileFromArgs(const QJsonArray &arrArgs);
