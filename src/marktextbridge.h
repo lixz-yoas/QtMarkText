@@ -105,6 +105,9 @@ signals:
     void windowActionRequested(const QString &sAction);
     /// 偏好设置被渲染层改动
     void preferenceChangedByRenderer(const QString &sKey, const QJsonValue &value);
+    /// 渲染层的布局状态变化（mt::view-layout-changed：侧边栏 / 标签栏的显示与否）
+    /// —— 渲染层是自绘布局，"切换侧边栏/标签栏"由它自己改，外壳据此同步菜单勾选。
+    void layoutChanged(bool bShowSideBar, bool bShowTabBar);
 
 private:
     void registerInvokeHandlers();

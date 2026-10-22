@@ -44,8 +44,19 @@ const QHash<QString, QVariant> &PreferencesStore::defaults()
         map.insert(QStringLiteral("autoSaveDelay"),           5000);
         map.insert(QStringLiteral("openFilesInNewWindow"),    false);
         map.insert(QStringLiteral("startUpAction"),           QStringLiteral("restoreAll"));
-        map.insert(QStringLiteral("sideBarVisibility"),       false);
+        // 侧边栏默认打开（MarkText 原缺省为 false）：用户要求"默认打开视图的切换侧边栏"。
+        // 真正的显示由渲染层决定，外壳在 mt::bootstrap-editor 里下发本值（见 marktextbridge.cpp）。
+        map.insert(QStringLiteral("sideBarVisibility"),       true);
         map.insert(QStringLiteral("tabBarVisibility"),        false);
+        // restoreLayoutState：原版 MarkText「通用 - 恢复上次布局状态」开关，本外壳同样采用。
+        // 关键：外皮下发的口径是 restoreLayoutState && sideBarVisibility，
+        // 缺了这个键就取到 false，侧边栏永远不显示（20261013 修复的现象）。
+        map.insert(QStringLiteral("restoreLayoutState"),      true);
+        // 注意：「上次打开的文件夹」不放这里 —— 它属于外壳自有的界面状态，
+        // 存 ini 的 [ui] 节（见 MainWindow::lastOpenedFolder）。
+        // 放进偏好表会被渲染层回传的全量偏好覆盖成空（实测踩过）。
+        // defaultDirectoryToOpen：原版 MarkText startUpAction=folder 时的固定目录，保留语义备用。
+        map.insert(QStringLiteral("defaultDirectoryToOpen"),  QString());
         map.insert(QStringLiteral("zoom"),                    1.0);
         map.insert(QStringLiteral("hideScrollbar"),           false);
 

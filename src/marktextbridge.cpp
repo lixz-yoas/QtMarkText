@@ -1090,6 +1090,16 @@ void MarkTextBridge::registerSendHandlers()
                           emit shellActionRequested(QStringLiteral("open-directory"));
                       });
 
+    // ---- 布局状态（渲染层自绘侧边栏/标签栏）----
+    // 渲染层 SET_LAYOUT/TOGGLE_LAYOUT_ENTRY 后会 DISPATCH_LAYOUT_MENU_ITEMS()：
+    //   send("mt::view-layout-changed", windowId, { showTabBar, showSideBar })
+    // 外壳收到后同步「视图」菜单的勾选状态，否则点一次菜单项，界面变了、勾却不动。
+    m_hashSend.insert(QStringLiteral("mt::view-layout-changed"), [this](const QJsonArray &arrArgs) {
+        const QJsonObject obj = arrArgs.at(1).toObject();
+        emit layoutChanged(obj.value(QStringLiteral("showSideBar")).toBool(),
+                           obj.value(QStringLiteral("showTabBar")).toBool());
+    });
+
     // ---- 保存落盘（渲染层 FILE_SAVE / FILE_SAVE_AS 的回执）----
     // 渲染层把自己持有的 markdown 发回来，这里落盘并回报结果。
     m_hashSend.insert(QStringLiteral("mt::response-file-save"),

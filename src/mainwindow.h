@@ -6,6 +6,7 @@
 #include <QStringList>
 
 class QCloseEvent;
+class QEvent;
 class QAction;
 class QDockWidget;
 class QFileSystemModel;
@@ -52,6 +53,23 @@ protected:
 
     /// 关闭窗口时的退出时序处理（WebView2 必须在消息循环尚在时关闭，否则进程退出不干净）
     void closeEvent(QCloseEvent *pEvent) override;
+
+    /// 首次显示时按上次的"正常大小"落位。**不能放在构造函数里**：Qt 的 show()
+    /// 还会用它自己记的 geometry 再 SetWindowPos 一次，把构造函数里设的值冲掉
+    /// （实测尺寸被还原成 1200x800 + Qt 假定的边框 16x39 = 1216x839）。
+    void showEvent(QShowEvent *pEvent) override;
+
+    /// 窗口状态变化（最大化↔还原）→ 刷新右上角"最大化/还原"按钮的图标
+    void changeEvent(QEvent *pEvent) override;
+
+    /// 跟踪"正常大小"。无系统标题栏 + WM_NCCALCSIZE 抹平非客户区之后，
+    /// 系统/Qt 记的还原位置会被污染（实测"还原"后窗口仍是最大化尺寸 2576x1408），
+    /// 所以正常态下的每次移动/缩放都自己记一份，还原时显式用回去。
+    void resizeEvent(QResizeEvent *pEvent) override;
+    void moveEvent(QMoveEvent *pEvent) override;
+
+    /// 菜单栏空白处：左键拖动窗口、双击最大化/还原（Windows 标题栏手感）
+    bool eventFilter(QObject *pWatched, QEvent *pEvent) override;
 
 private slots:
     /// WebView2 内按下了 Alt → 呼出/收起菜单栏（对齐 MarkText）
@@ -132,6 +150,39 @@ private:
     void applyEngineHostBackground(const QColor &color);
     void showPendingMessage(const QString &sWhat);
 
+    // ---- 无系统标题栏的自绘顶栏：菜单栏拖动 + 右上角窗口按钮 ----
+    /// 焦点（屏幕坐标）是否落在"菜单栏空白处"。菜单项本身、右上角窗口按钮不算，
+    /// 只有空白处才当作标题栏（可拖动窗口 / 双击最大化还原）。
+    bool isMenuBarCaptionArea(const QPoint &ptGlobal) const;
+    /// 刷新右上角"最大化/还原"按钮的图标与描边色（跟随外壳主题）
+    void updateWindowButtons();
+    /// 把三颗窗口按钮的**稳定后**真实屏幕坐标打进日志（延后一拍调用，
+    /// 供外部自动化脚本精确对齐点击位置；窗口状态切换时布局当拍还没稳）。
+    void logWindowButtonCenters();
+    /// 安排一次（防抖）按钮坐标诊断
+    void scheduleButtonDiag();
+    /// 最大化 ↔ 还原。还原时显式回到自己记着的"正常大小"（不用系统的还原位置，
+    /// 那玩意儿在本窗口下实测是被污染的）。
+    void toggleMaximizeRestore();
+    /// 记下当前"正常大小"（仅在非最大化/最小化/全屏时有效）
+    void rememberNormalGeometry();
+    /// 退出时把"正常大小"（最大化/全屏时取 normalGeometry）落盘；
+    /// 下次启动按它还原 —— 即"保留正常大小作为下次启动时的大小"。
+    void saveWindowGeometry();
+    /// 启动时按上次的"正常大小"还原窗口位置与尺寸
+    void restoreWindowGeometry();
+
+    // ---- 侧边栏与目录（默认打开视图）----
+    /// 把目录交给渲染层的项目树（对照 Electron 主进程的 mt::open-directory），
+    /// 并把它记为"上次打开的文件夹"
+    void openFolderInShell(const QString &sDir);
+    /// 渲染层就绪后，若上次的文件夹仍在则自动重新打开（只做一次）
+    void restoreLastOpenedFolder();
+    /// "上次打开的文件夹"存 ini 的 [ui] 节 —— 属外壳自有界面状态，
+    /// 不进偏好表（偏好表是全量下发给渲染层、也会被它回传覆盖的）。
+    QString lastOpenedFolder() const;
+    void    setLastOpenedFolder(const QString &sDir);
+
     /// 字数/字符数/段落数（对齐 MarkText 状态栏的 counters）
     static QString counterText(const QString &sMarkdown);
 
@@ -146,8 +197,19 @@ private:
     PreferencesDialog *m_pPreferences;
     PreferencesStore  *m_pStore;
     QTimer            *m_pAutoSaveTimer;
+    QWidget           *m_pWindowButtons;      // 菜单栏右上角的 最小化/最大化/关闭（自定义绘制）
+    QTimer            *m_pButtonsDiagTimer;   // 按钮坐标诊断的"稳态"延时器
     QStringList        m_listRecentFiles;
     QString            m_sLastDir;
+    bool               m_bLastFolderRestored; // 上次文件夹只自动恢复一次
+    bool               m_bGeometryRestored;   // 上次窗口大小只还原一次（showEvent 里做）
+    QRect              m_rcNormalGeometry;    // 自记的"正常大小"（非最大化时）
+    bool               m_bNormalGeometryValid;// m_rcNormalGeometry 是否已可用
+    QString            m_sLastCommandId;      // 命令去重（菜单快捷键有两条到达路径）
+    qint64             m_nLastCommandMs;
+    bool               m_bDraggingMenuBar;    // 菜单栏空白处按住拖动中
+    QPoint             m_ptDragOrigin;        // 拖动起点（全局）
+    QPoint             m_ptDragWindowOrigin;  // 拖动开始时的窗口位置
 };
 
 #endif // MAINWINDOW_H
