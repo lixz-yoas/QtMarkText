@@ -879,6 +879,27 @@ void MainWindow::restoreLastOpenedFolder()
     m_sLastDir = sDir;
 }
 
+QString MainWindow::dialogStartDir() const
+{
+    // ---- 为什么必须转反斜杠：Windows 原生文件对话框的起始目录只认 '\' ----
+    // 实测（tmp_qtmin/shelltest/test_shell.exe，直调 shell 的
+    // SHCreateItemFromParsingName）：正斜杠路径一律返回 E_INVALIDARG(0x80070057)，
+    // 只有反斜杠能解析。解析失败时对话框弹「路径不存在」，并把可解析前缀
+    // 当作当前目录、剩余残段填进"文件名"框 —— 正是 20261014 用户截图的现象。
+    //
+    // 而 m_sLastDir 的两个来源都产出 Qt 风格正斜杠：
+    //   1) openFile 里 QFileInfo::absolutePath()（恒为正斜杠）；
+    //   2) ini 读回的 lastOpenedFolder（历史上写入过正斜杠形式）。
+    // 所以传给任何 QFileDialog 之前必须统一转成原生分隔符。
+    QDir dir(m_sLastDir);
+    if (!dir.exists()) {
+        // 记录的目录已不在（被删/盘符变化）：退回用户主目录，别让对话框报错
+        qInfo("[对话框] 起始目录不存在，退回主目录：%s", qPrintable(m_sLastDir));
+        return QDir::toNativeSeparators(QDir::homePath());
+    }
+    return QDir::toNativeSeparators(dir.absolutePath());
+}
+
 void MainWindow::onWindowAction(const QString &sAction)
 {
     // 渲染层标题栏窗口按钮 → 外壳窗口动作（对照 Electron 的 win.send('mt::win::*')）
@@ -1217,9 +1238,9 @@ bool MainWindow::saveCurrentFile(bool bSaveAs)
 
     QString sPath = pEngine->filePath();
     if (bSaveAs || sPath.isEmpty()) {
-        const QString sDefault = sPath.isEmpty()
-                                     ? m_sLastDir + QStringLiteral("/未命名.md")
-                                     : sPath;
+        const QString sDefault = QDir::toNativeSeparators(
+                    sPath.isEmpty() ? m_sLastDir + QStringLiteral("/未命名.md")
+                                    : sPath);
         sPath = QFileDialog::getSaveFileName(
             this,
             QStringLiteral("保存 Markdown 文件"),
@@ -1289,9 +1310,9 @@ void MainWindow::exportCurrentAsHtml()
         return;
     }
 
-    const QString sDefault = m_sLastDir + QStringLiteral("/")
+    const QString sDefault = QDir::toNativeSeparators(m_sLastDir + QStringLiteral("/")
                              + QFileInfo(pEngine->displayName()).completeBaseName()
-                             + QStringLiteral(".html");
+                             + QStringLiteral(".html"));
     const QString sPath = QFileDialog::getSaveFileName(
         this, QStringLiteral("导出为 HTML"), sDefault,
         QStringLiteral("HTML 文件 (*.html)"));
@@ -1330,9 +1351,9 @@ void MainWindow::exportCurrentAsPdf()
         return;
     }
 
-    const QString sDefault = m_sLastDir + QStringLiteral("/")
+    const QString sDefault = QDir::toNativeSeparators(m_sLastDir + QStringLiteral("/")
                              + QFileInfo(pEngine->displayName()).completeBaseName()
-                             + QStringLiteral(".pdf");
+                             + QStringLiteral(".pdf"));
     const QString sPath = QFileDialog::getSaveFileName(
         this, QStringLiteral("导出为 PDF"), sDefault, QStringLiteral("PDF 文件 (*.pdf)"));
     if (sPath.isEmpty()) {
@@ -1594,7 +1615,7 @@ void MainWindow::onMenuCommand(const QString &sId)
     }
     if (sId == QLatin1String("openFileMenuItem")) {
         const QString sPath = QFileDialog::getOpenFileName(
-            this, QStringLiteral("打开 Markdown 文件"), m_sLastDir,
+            this, QStringLiteral("打开 Markdown 文件"), dialogStartDir(),
             QStringLiteral("Markdown 文件 (*.md *.markdown *.txt);;所有文件 (*.*)"));
         if (!sPath.isEmpty()) {
             openFile(sPath);
@@ -1603,7 +1624,7 @@ void MainWindow::onMenuCommand(const QString &sId)
     }
     if (sId == QLatin1String("openFolderMenuItem")) {
         const QString sDir = QFileDialog::getExistingDirectory(
-            this, QStringLiteral("打开文件夹"), m_sLastDir);
+            this, QStringLiteral("打开文件夹"), dialogStartDir());
         if (!sDir.isEmpty()) {
             openFolderInShell(sDir);
         }

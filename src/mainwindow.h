@@ -182,6 +182,9 @@ private:
     /// 不进偏好表（偏好表是全量下发给渲染层、也会被它回传覆盖的）。
     QString lastOpenedFolder() const;
     void    setLastOpenedFolder(const QString &sDir);
+    /// 传给 Windows 原生文件对话框（打开/保存）的起始目录：
+    /// 必须是反斜杠且真实存在，见 dialogStartDir() 实现处的说明
+    QString dialogStartDir() const;
 
     /// 字数/字符数/段落数（对齐 MarkText 状态栏的 counters）
     static QString counterText(const QString &sMarkdown);
