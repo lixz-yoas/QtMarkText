@@ -171,6 +171,10 @@ private:
     void saveWindowGeometry();
     /// 启动时按上次的"正常大小"还原窗口位置与尺寸
     void restoreWindowGeometry();
+    /// 四周留出一条自己的窄边（见实现处说明）：无边框窗口下系统拿不到非客户区，
+    /// 主窗口更被 WebView2 / 菜单栏的原生子窗口盖满 —— 靠这条窄边才能收回
+    /// WM_NCHITTEST，从而恢复"拖动边框缩放"。最大化/全屏时留 0。
+    void updateWindowFrameMargins();
 
     // ---- 侧边栏与目录（默认打开视图）----
     /// 把目录交给渲染层的项目树（对照 Electron 主进程的 mt::open-directory），

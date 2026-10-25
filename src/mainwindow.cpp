@@ -137,6 +137,15 @@ QColor lightEditorBackground()
     return QColor(0xff, 0xff, 0xff);
 }
 
+/// 无边框窗口自身的"可拖动缩放边框"宽度（逻辑像素）。
+/// 为什么需要它：WM_NCCALCSIZE 把客户区扩到整个窗口矩形后，窗口四周再没有任何
+/// 非客户区，系统既画不出缩放光标、也拿不到拖动上下文；更麻烦的是编辑器区域的
+/// WebView2（Chrome_RenderWidgetHostHWND）与菜单栏各有一个原生子窗口铺满客户区
+/// （实测：WebView2 覆盖 x 全宽、y 从菜单栏下方直到底边），主窗口连
+/// WM_NCHITTEST 都收不到。于是在窗口四周留出这条窄边 —— 那里没有子窗口覆盖，
+/// 主窗口能收到 WM_NCHITTEST，再自己补回 HT*（见 nativeEvent）。
+const int kResizeBorder = 8;
+
 //=====================================================================
 //  菜单栏右上角的窗口按钮（最小化 / 最大化·还原 / 关闭）
 // ---------------------------------------------------------------------
@@ -399,6 +408,9 @@ MainWindow::MainWindow(QWidget *pParent)
 
     applyShellTheme();
 
+    // 四周留出可拖动的缩放边框（无边框窗口下系统没有非客户区可用，见函数注释）
+    updateWindowFrameMargins();
+
     // ---- 外壳视觉对齐 MarkText（v0.19.1 Windows）----
     // MarkText 的标签栏/侧栏/状态栏全部由渲染层自绘，外壳只提供窗口：
     //   - 标签栏：渲染层有自己的 tab 栏
@@ -520,6 +532,90 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *pMessage, long *
         *pnResult = 0;
         return true;
     }
+
+    // ---- 边框拖动缩放（见 kResizeBorder 的说明）----
+    // 窗口四周留出的那条窄边是主窗口自己的客户区（没有子窗口盖在上面），系统在
+    // 那里收不到非客户区，于是由这里按"离窗口边缘多近"补回 HT*：系统的缩放光标、
+    // 按住拖动改尺寸、以及把窗口拖到屏幕边缘时的 Aero Snap 吸附，全都回来了。
+    // 最大化/最小化时不管（最大化时边框在屏幕外，且此时拉动应交给系统做"拖出还原"）。
+    if (pMsg != nullptr && pMsg->message == WM_NCHITTEST) {
+        if (!IsZoomed(pMsg->hwnd) && !IsIconic(pMsg->hwnd)) {
+            RECT rcWin = { 0, 0, 0, 0 };
+            ::GetWindowRect(pMsg->hwnd, &rcWin);
+
+            // lParam 给的是屏幕坐标（物理像素）；本窗口客户区 == 窗口矩形，
+            // 所以"屏幕坐标 - 窗口左上角"即命中点相对客户区的坐标。
+            const int nX = static_cast<int>(static_cast<short>(LOWORD(pMsg->lParam))) - rcWin.left;
+            const int nY = static_cast<int>(static_cast<short>(HIWORD(pMsg->lParam))) - rcWin.top;
+            const int nW = rcWin.right - rcWin.left;
+            const int nH = rcWin.bottom - rcWin.top;
+
+            // 窄边是逻辑像素，这里换算成物理像素再比（高分屏下两者不等）
+            int nBorder = static_cast<int>(kResizeBorder * devicePixelRatioF() + 0.5);
+            if (nBorder < 4) {
+                nBorder = 4;
+            }
+
+            const bool bLeft   = (nX < nBorder);
+            const bool bRight  = (nX >= nW - nBorder);
+            const bool bTop    = (nY < nBorder);
+            const bool bBottom = (nY >= nH - nBorder);
+
+            int nHit = 0;
+            if (bTop && bLeft)          nHit = HTTOPLEFT;
+            else if (bTop && bRight)    nHit = HTTOPRIGHT;
+            else if (bBottom && bLeft)  nHit = HTBOTTOMLEFT;
+            else if (bBottom && bRight) nHit = HTBOTTOMRIGHT;
+            else if (bLeft)             nHit = HTLEFT;
+            else if (bRight)            nHit = HTRIGHT;
+            else if (bTop)              nHit = HTTOP;
+            else if (bBottom)           nHit = HTBOTTOM;
+
+            if (nHit != 0) {
+                // 诊断（量小、且对外部自动化有实际用途）：把"命中点 + 判定结果"记下，
+                // 便于核对四周各条边/角是否都判对。窗口 8 条边角都过一遍也就百来行。
+                static int s_nHitLogged = 0;
+                if (s_nHitLogged < 160) {
+                    ++s_nHitLogged;
+                    qInfo("[缩放] 命中 点(%d,%d) 窗口 %dx%d 边框=%d -> HT=%d",
+                          nX, nY, nW, nH, nBorder, nHit);
+                }
+                *pnResult = nHit;
+                return true;
+            }
+
+            // 诊断：鼠标已在窄边带内却没判成缩放区 —— 正常不该出现，记下来便于定位。
+            static int s_nMissLogged = 0;
+            if ((bLeft || bRight || bTop || bBottom) && s_nMissLogged < 25) {
+                ++s_nMissLogged;
+                qInfo("[缩放] 未命中 点(%d,%d) 窗口 %dx%d 边框=%d（左右上下=%d%d%d%d）",
+                      nX, nY, nW, nH, nBorder, bLeft ? 1 : 0, bRight ? 1 : 0,
+                      bTop ? 1 : 0, bBottom ? 1 : 0);
+            }
+        }
+    }
+    // ---- 缩放光标 ----
+    // 光有 WM_NCHITTEST 还不够：系统之后会用 WM_SETCURSOR 回问窗口"该显示哪个光标"，
+    // 而 Qt 自己会处理 WM_SETCURSOR（按 QWidget::cursor() 设成箭头）——结果就是
+    // 检测出 HTLEFT/HTRIGHT 了、拖动也确实能改尺寸，但鼠标形状一直是普通箭头，
+    // 用户完全看不出"这里可以拖"。这里在非客户区缩放的命中码上直接给系统缩放光标。
+    if (pMsg != nullptr && pMsg->message == WM_SETCURSOR && !IsZoomed(pMsg->hwnd)) {
+        const int nHit = static_cast<int>(LOWORD(pMsg->lParam));
+        LPCTSTR pCursorId = nullptr;
+        switch (nHit) {
+        case HTLEFT:        case HTRIGHT:        pCursorId = IDC_SIZEWE;   break;
+        case HTTOP:         case HTBOTTOM:       pCursorId = IDC_SIZENS;   break;
+        case HTTOPLEFT:     case HTBOTTOMRIGHT:  pCursorId = IDC_SIZENWSE; break;
+        case HTTOPRIGHT:    case HTBOTTOMLEFT:   pCursorId = IDC_SIZENESW; break;
+        default: break;
+        }
+        if (pCursorId != nullptr) {
+            ::SetCursor(::LoadCursor(nullptr, pCursorId));
+            *pnResult = TRUE;
+            return true;
+        }
+    }
+
     return QMainWindow::nativeEvent(eventType, pMessage, pnResult);
 }
 #endif
@@ -605,9 +701,12 @@ bool MainWindow::eventFilter(QObject *pWatched, QEvent *pEvent)
 
 void MainWindow::changeEvent(QEvent *pEvent)
 {
-    // 最大化 ↔ 还原时，右上角那颗按钮要在"最大化"与"还原"两个图标间切换
+    // 最大化 ↔ 还原：
+    //   - 右上角那颗按钮要在"最大化"与"还原"两个图标间切换
+    //   - 四周的缩放边框要收掉/放开（最大化时不能留，否则四周一圈色带）
     if (pEvent != nullptr && pEvent->type() == QEvent::WindowStateChange) {
         updateWindowButtons();
+        updateWindowFrameMargins();
     }
     QMainWindow::changeEvent(pEvent);
 }
@@ -803,6 +902,24 @@ void MainWindow::restoreWindowGeometry()
     // 把还原出来的尺寸认作"正常大小" —— 之后点最大化再还原，回到的就是它
     m_rcNormalGeometry = rect;
     m_bNormalGeometryValid = true;
+}
+
+void MainWindow::updateWindowFrameMargins()
+{
+    // 四周留出 kResizeBorder 宽的"自绘边框"。这条边是主窗口自己的客户区：
+    //   - 没有子窗口盖在上面（WebView2 与菜单栏的原生窗口只覆盖内容区）
+    //   - 主窗口因此能收到 WM_NCHITTEST，在 nativeEvent 里补回 HTLEFT/HTRIGHT/…
+    //   - 系统的缩放光标、按住拖动改尺寸、Aero Snap 边缘吸附随之全部恢复
+    // 最大化 / 全屏时不留：那时窗口贴着屏幕边，留着只会在四周出现一圈色带，
+    // 而且此时本来也不该再拖动缩放（系统会把边缘拖动解释成"拖出还原"）。
+    const bool bFull = isMaximized() || isFullScreen();
+    const int nMargin = bFull ? 0 : kResizeBorder;
+    if (contentsMargins().left() == nMargin && contentsMargins().top() == nMargin
+            && contentsMargins().right() == nMargin && contentsMargins().bottom() == nMargin) {
+        return;   // 没变就别动，免得触发无谓的重排
+    }
+    setContentsMargins(nMargin, nMargin, nMargin, nMargin);
+    qInfo("[窗口] 四周缩放边框：%d px（最大化=%d）", nMargin, bFull ? 1 : 0);
 }
 
 //=====================================================================
